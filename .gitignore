@@ -1,3 +1,5 @@
 logs/
 *.pt
 *.ckpt
+outputs/
+wandb/
