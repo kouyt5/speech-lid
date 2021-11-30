@@ -2,6 +2,8 @@ import hydra
 from omegaconf import DictConfig, OmegaConf
 import logging
 
+from lid.loggers.wandb_logger import WandbLogger
+
 # 为什么使用hydra？
 # hydra提供简易的配置文件读取接口、实验日志按照时间归档管理，并且对关键代码侵入性
 # 较小，因此在这里使用，虽然增加了代码的复杂性，但是比起自己实现一套配置文件读取以及
@@ -26,6 +28,10 @@ def main(cfg: DictConfig) -> None:
     # 解码器参数
     decoder_conf = conf['decoder']
     # 日志参数(tensorboard, wandb)
+    wandb_conf = conf['loggers']['wandb']
+    wandb_logger = WandbLogger(project=wandb_conf['project'],wandb_id=wandb_conf['wandb_id'],
+                               entity=wandb_conf['entity'], name=wandb_conf['name'], group=wandb_conf['group'])
+    
     
     
 
