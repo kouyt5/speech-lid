@@ -1,0 +1,7 @@
+defaults:
+  - base: custom  # 基本的日志配置
+
+model:
+  model_name: &model_name lid_base
+  layer1:
+    num_cnn: 2
