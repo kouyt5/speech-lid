@@ -1,11 +1,11 @@
-# theme: jekyll-theme-dinky
 # Configurations
-title:            cc Gitbook
-longtitle:        cc Gitbook
+title:            语种识别
+longtitle:        面向复杂环境的语种识别
 author:           kouyt5
-email:            sighingnow@gmail.com
+email:            1147893200@qq.com
 description: >
-  Build Jekyll site with the GitBook style.
+  面向复杂环境的语种识别方法研究
+
 version:          1.0
 gitbook_version:  3.2.3
 
