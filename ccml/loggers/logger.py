@@ -1,20 +1,23 @@
 from typing import Any, Dict
 
-from git import exc
-from loggers.base_logger import BaseLogger
+from ccml.loggers.base_logger import BaseLogger
 from tqdm import tqdm
 import torch
 import logging
 
+from ccml.loggers.wandb_logger import WandbLogger
+
 
 class Logger:
-    def __init__(self, rank:int = 0) -> None:
+    def __init__(self, rank: int = -1, interval:int = 1) -> None:
         self.rank = rank
         self.loggers = []  # logger集合
-        
+
         self.global_tqdm_elements = {}  # 打印到tqdm的元素
-    
-    def add_logger(self, logger:BaseLogger):
+        self.interval = interval
+        self.global_step = 0
+        
+    def add_logger(self, logger: BaseLogger):
         """添加一个logger
 
         Args:
@@ -25,14 +28,19 @@ class Logger:
             logging.info("添加一个logger")
         else:
             logging.warning("添加logger失败")
-        
-            
-    def log(self, data: Dict[str, Any] = None, # 打印的数据
-            progress:bool = False,  # 是否打印到进度条
-            tbar:tqdm = None, # tqdm对象
-            ):
+    def attach_trainer(self, trainer):
+        self.trainer = trainer
+
+    def log(
+        self,
+        data: Dict[str, Any] = None,  # 打印的数据
+        progress: bool = False,  # 是否打印到进度条
+        stage:str = "train",  # train, val
+        # tbar: tqdm = None,  # tqdm对象
+        *args, **kwargs
+    ):
         """打印日志接口
-        
+
         日志分为两种：
             1. 在tqdm中
             2. 在tqdm外
@@ -41,14 +49,21 @@ class Logger:
         """
         if data is None:
             return
-        for logger in self.loggers:
-            logger.log(data)
+        self.global_step += 1
+        # 打印频率
+        if stage == "train" and self.global_step % self.interval != 0:
+            return
         
+        for logger in self.loggers:
+            if isinstance(logger, WandbLogger):
+                logger.log({stage:data}, *args, **kwargs)
+            logger.log(data, *args, **kwargs)
+
         # 打印到tqdm,并且限制rank为0的master节点才打印
-        if progress and self.rank == 0:
+        if progress and self.rank <= 0:
             for key, value in data.items():
                 # 判断value值类型
-                convert_value = 0.
+                convert_value = 0.0
                 if isinstance(value, float) or isinstance(value, int):
                     convert_value = value
                 if isinstance(value, torch.Tensor):
@@ -58,10 +73,10 @@ class Logger:
                         logging.warning("Tensor cant convert to a float or int. ", e)
                 self.global_tqdm_elements[key] = convert_value
             # print
-            if tbar is not None:
-                tbar.set_postfix(self.global_tqdm_elements)
-    
-    def watch_model(self, model:torch.nn.Module, *args, **kwargs):
+            if self.trainer.tbar is not None:
+                self.trainer.tbar.set_postfix(self.global_tqdm_elements)
+
+    def watch_model(self, model: torch.nn.Module, *args, **kwargs):
         """观察模型
 
         Args:
@@ -71,7 +86,7 @@ class Logger:
             return
         for logger in self.loggers:
             logger.watch_model(model, *args, **kwargs)
-    
+
     def get_checkpoint_by_name(self, name, path):
         checkpoint_path = None
         for logger in self.loggers:
@@ -79,8 +94,8 @@ class Logger:
                 checkpoint_path = logger.get_checkpoint_by_name(name, path)
                 break
         return checkpoint_path
-    
-    def load_state_dict(self, state_dict:str=None):
+
+    def load_state_dict(self, state_dict: str = None):
         """从checkpoint中恢复状态
 
         Args:
@@ -88,24 +103,31 @@ class Logger:
         """
         for logger in self.loggers:
             logger.resume_from(state_dict)
- 
+
     def state_dict(self):
-        """logger的状态字典
-        """
+        """logger的状态字典"""
         checkpoint = {}
         for logger in self.loggers:
             if logger.get_resume_state()[0] is not None:
                 checkpoint[logger.get_resume_state()[0]] = logger.get_resume_state()[1]
         return checkpoint
- 
-if __name__=='__main__':
+
+
+if __name__ == "__main__":
     import random
     import time
+
     logger = Logger()
     with tqdm(enumerate(range(100)), total=100, desc="训练中") as tbar:
         for i, batch in tbar:
-            logger.log({"loss": random.randint(1,4),'acc': random.randint(1,2)},
-                    progress=True, tbar=tbar)
+            logger.log(
+                {"loss": random.randint(1, 4), "acc": random.randint(1, 2)},
+                progress=True,
+                tbar=tbar,
+            )
             time.sleep(0.5)
-            logger.log({"loss2": random.randint(1,4),'acc2': random.randint(1,2)},
-                    progress=True, tbar=tbar)
+            logger.log(
+                {"loss2": random.randint(1, 4), "acc2": random.randint(1, 2)},
+                progress=True,
+                tbar=tbar,
+            )

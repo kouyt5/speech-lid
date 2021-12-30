@@ -6,13 +6,12 @@ from loggers.base_logger import BaseLogger
 
 
 class TensorboardLogger(BaseLogger):
-    def __init__(self, log_dir:str=None) -> None:
+    def __init__(self, log_dir: str = None) -> None:
         self.writer = SummaryWriter(log_dir=log_dir)
         self.metrics_step_dict = {}
         logging.info("tensorboard init 成功！")
-        
-    def log(self, data:Dict[str, Any]
-            ):
+
+    def log(self, data: Dict[str, Any], *args, **kwargs):
         """tensorboard 日志, 一个step只能调用一次
 
         Args:
@@ -21,7 +20,7 @@ class TensorboardLogger(BaseLogger):
         for key, value in data.items():
             step = self.get_global_step(key)
             self.writer.add_scalar(key, value, global_step=step)
-    
+
     def get_global_step(self, name):
         """根据指标名字获取step数字
 
@@ -33,13 +32,12 @@ class TensorboardLogger(BaseLogger):
         # 用一次就加一
         self.metrics_step_dict[name] += 1
         return self.metrics_step_dict[name]
-        
+
     def get_resume_state(self) -> Tuple[str, dict]:
-        """获取储存的状态，用于恢复训练日志指标的状态
-        """
+        """获取储存的状态，用于恢复训练日志指标的状态"""
         return "tensorboard", self.metrics_step_dict
-    
-    def resume_from(self, checkpoint:dict):
+
+    def resume_from(self, checkpoint: dict):
         """从checkpoint中恢复状态
 
         Args:
@@ -51,8 +49,11 @@ class TensorboardLogger(BaseLogger):
             self.metrics_step_dict = checkpoint["tensorboard"]
         else:
             logging.warning("checkpoint 中无tensorboad的状态字典")
-        logging.info("tensorboard resume from checkpoint, value={:s}".format(str(checkpoint)))
-    
+        logging.info(
+            "tensorboard resume from checkpoint, value={:s}".format(str(checkpoint))
+        )
+
+
 # if __name__=='__main__':
 #     import time
 #     import torch
@@ -70,4 +71,3 @@ class TensorboardLogger(BaseLogger):
 #         if i % 100 == 1:
 #             logging.info('save a file {:d}'.format(i))
 #             torch.save({'epoch': i, 'tb_state':tb.get_resume_state()}, 'outputs/last.ckpt')
-        
