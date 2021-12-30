@@ -1,0 +1,26 @@
+program: main.py
+method: bayes
+metric:
+  goal: maximize
+  name: val_acc
+parameters:
+  dropout:
+    values: [0.0, 0.1, 0.2]
+  lr:
+    values: [0.1, 0.01, 0.02, 0.05, 0.001]
+  hidden_dim:
+    values: [32, 128, 256, 512, 1024]
+  rotation:
+    values: [1, 10, 20, 30]
+  # activation:
+  #   values: ["relu", "prelu", "rrelu"]
+  # aug_type:
+  #   values: ["noise", "none"]
+  # aug_value:
+  #   min: 0.001
+  #   max: 0.2
+early_terminate:
+  type: hyperband
+  s: 2
+  eta: 3
+  max_iter: 27
