@@ -49,7 +49,7 @@ def main(config=None):
 
     tokenizer = CTCTokenizer(vocab=config.vocab)
     train_dataset = RawAudioDatasets(
-        manifest_path=config.train_manifest, tokenizer=tokenizer
+        manifest_path=config.train_manifest, tokenizer=tokenizer, max_duration=config.max_duration
     )
     val_dataset = RawAudioDatasets(
         manifest_path=config.val_manifest, tokenizer=tokenizer, max_duration=37
@@ -154,6 +154,7 @@ if __name__ == "__main__":
         choices=["last_hidden_state", "hidden_states"],
         help="select feature including hidden_states and last_hidden_state",
     )
+    parse.add_argument("--max_duration", type=float, default=16.7)
     parse.add_argument("--linear_dim", type=int, default=768, help="768 for base, 1024 for large or xlsr")
     parse.add_argument("--total_epoch", type=int, default=40)
     parse.add_argument("--train_bs", type=int, default=4)
