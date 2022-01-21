@@ -118,6 +118,12 @@ class CCMLModule:
     def test_loop(self, batch):
         raise NotImplementedError()
 
+    def before_train_loop(self, value):
+        """
+        训练开始调用
+        """
+        pass
+    
     def train_loop_end(self, outputs: List[Any] = None):
         """当训练结束时候调用
 

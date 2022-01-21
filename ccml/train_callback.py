@@ -34,3 +34,8 @@ class Callback:
         """
         pass
     
+    def before_train_epoch(self, *args, **kwargs):
+        """在训练开始时候调用
+        """
+        pass
+    
