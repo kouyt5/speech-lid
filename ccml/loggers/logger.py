@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from ccml.loggers.base_logger import BaseLogger
 from tqdm import tqdm
@@ -36,7 +36,7 @@ class Logger:
         data: Dict[str, Any] = None,  # 打印的数据
         progress: bool = False,  # 是否打印到进度条
         stage:str = "train",  # train, val
-        # tbar: tqdm = None,  # tqdm对象
+        only_tbar: bool = False,  #是否仅仅打印到控制台
         *args, **kwargs
     ):
         """打印日志接口
@@ -53,11 +53,11 @@ class Logger:
         # 打印频率
         if stage == "train" and self.global_step % self.interval != 0:
             return
-        
-        for logger in self.loggers:
-            if isinstance(logger, WandbLogger):
-                logger.log({stage:data}, *args, **kwargs)
-            logger.log(data, *args, **kwargs)
+        if not only_tbar:
+            for logger in self.loggers:
+                # if isinstance(logger, WandbLogger):
+                #     logger.log({stage:data}, *args, **kwargs)
+                logger.log(data, *args, **kwargs)
 
         # 打印到tqdm,并且限制rank为0的master节点才打印
         if progress and self.rank <= 0:
@@ -112,6 +112,10 @@ class Logger:
                 checkpoint[logger.get_resume_state()[0]] = logger.get_resume_state()[1]
         return checkpoint
 
+    def remove_key(self, keys:List):
+        for key in keys:
+            if key in self.global_tqdm_elements.keys():
+                self.global_tqdm_elements.pop(key)
 
 if __name__ == "__main__":
     import random
