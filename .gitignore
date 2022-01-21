@@ -4,3 +4,5 @@ logs/
 outputs/
 wandb/
 __pycache__/
+datasets/
+exp/

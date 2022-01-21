@@ -39,6 +39,8 @@ class Trainer:
         resume_train_states: bool = True,  # 恢复时是否resume训练状态，包括优化器等等，测试时为False
         loggers: Optional[List[BaseLogger]] = [],
         log_interval: int = 1,
+        use_swa: bool = False,  # 梯度平均
+        swa_config: Tuple[float, float] = (0.1, 0.1),  # (加权系数，swa最后轮数比例)
     ) -> None:
         self.total_epoch = total_epoch
         self.eval_interval = eval_interval
@@ -47,10 +49,12 @@ class Trainer:
         self.local_rank = local_rank
         self.use_amp = use_amp
         self.gpu_id = gpu_id
-        self.train_data_factor = train_data_factor  # 数据放缩因子
+        self.train_data_factor = train_data_factor
         self.ddp = ddp
         self.resume_train_states = resume_train_states
         self.checkpoint_path = checkpoint_path
+        self.use_swa = use_swa
+        self.swa_config = swa_config
         # assert train_dataset is None or val_dataset is None
         logging.debug(f"justlfy ddp cuda {torch.cuda.is_available()}")
         if ddp:
@@ -63,7 +67,7 @@ class Trainer:
                 os.environ["MASTER_ADDR"] = master_addr
                 logging.info(f"master addr {master_addr}")
             if init_method == "tcp://":
-                init_method += master_addr+":"+master_port
+                init_method += master_addr + ":" + master_port
                 logging.info(f"init_method={init_method}")
             logging.info(f"rank {self.local_rank} wait other process to join...")
             self.init_ddp(
@@ -92,6 +96,7 @@ class Trainer:
         self.sche_monitor = None  # "loss" or "acc" 由每一步返回值中的key决定
         self.total_steps = 0
         self.current_epoch = 0
+        self.current_step = 0
         self.optimizer = None
         self.lr_scheduler = None
         self.scheduler_param = None
@@ -128,7 +133,9 @@ class Trainer:
         self.model = self.ccml_module.get_model()
         # self.model = self.model.to(torch.device("cuda:"+str(self.gpu_id))) if self.gpu_id is not None else self.model
         # 初始化模型,加载到正确的gpu中和分布式封装
-        self.model = self.init_model(self.model, self.ddp, self.gpu_id)
+        self.model, self.swa_model = self.init_model(
+            self.model, self.ddp, self.gpu_id, self.use_swa, self.swa_config[0]
+        )
         logging.debug("model init done")
         self.training = (
             self.train_dataset is not None and self.val_dataset is not None
@@ -144,7 +151,7 @@ class Trainer:
 
             # 分布式的模型能否加载到非分布式模型？按理说应该可以
             # cpu上面初始化的模型能否加载gpu上初始化的模型？
-            self.model, self.current_epoch, _, _, _ = self.resume_from_checkpoint(
+            self.model, self.current_epoch, _, _, _, _ = self.resume_from_checkpoint(
                 self.checkpoint_path, self.resume_train_states, self.gpu_id, self.model
             )
             return  # 测试部分，只需要模型参数
@@ -184,6 +191,9 @@ class Trainer:
                 self.lr_scheduler,
                 self.logger,
             )
+        self.current_step = self.current_epoch * int(
+            len(self.train_dataloader) / self.accumulate_grad
+        )
         # watch model
         self.logger.watch_model(model=self.model)
 
@@ -192,6 +202,12 @@ class Trainer:
         训练循环
         """
         return self.ccml_module.train_loop(batch)
+
+    def before_train_loop(self, value):
+        """
+        训练开始回调
+        """
+        return self.ccml_module.before_train_loop(value)
 
     def train_loop_end(self, outputs: List[Any]):
         return self.ccml_module.train_loop_end(outputs)
@@ -312,6 +328,8 @@ class Trainer:
         model: torch.nn.Module = None,
         ddp: bool = False,
         gpu: Optional[int] = None,
+        use_swa: bool = False,
+        swa_w: float = 0.1,
     ) -> torch.nn.Module:
         """初始化模型，根据策略送入到gpu或cpu中
 
@@ -319,9 +337,12 @@ class Trainer:
             model (AgentModel, optional): 模型. Defaults to None.
             ddp (bool, optional): 是否是分布式. Defaults to False.
             gpu (Optional[int], optional): gpu编号. Defaults to None.
+            use_swa: bool: 是否使用模型平均训练,
+            swa_w int: 模型平均权重参数，对以前epoch的权重
 
         Returns:
-            torch.nn.Module: [description]
+            torch.nn.Module: 模型
+            torch.nn.Module: 平均模型
         """
         #  模型初始化
         device = torch.device("cpu")
@@ -336,6 +357,16 @@ class Trainer:
                 raise Exception("cuda不可用,考虑使用cpu训练")
             model = model.to(device)
             logging.debug(f"模型放到gpu{gpu}上训练")
+        # swa
+        swa_model = None
+
+        if use_swa:
+            ema_avg = (
+                lambda avg_model_params, model_params, num_avgraged: swa_w
+                * avg_model_params
+                + (1 - swa_w) * model_params
+            )
+            swa_model = torch.optim.swa_utils.AveragedModel(model, avg_fn=ema_avg)
         if ddp:
             # BN同步
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -347,7 +378,7 @@ class Trainer:
             model.register_comm_hook(
                 state=None, hook=default.fp16_compress_hook
             )  # 默认使用分布式参数压缩
-        return model
+        return model, swa_model
 
     def fit(
         self,
@@ -371,9 +402,9 @@ class Trainer:
         if dataloader_params is None:
             dataloader_params = self.ccml_module.dataloader_param
         self.dataloader_params = dataloader_params
+        self.ccml_module.point_trainer(self)
         self.trainer_prepare()
         logging.debug("trainer_prepare done")
-        self.ccml_module.point_trainer(self)
 
         context = contextlib.nullcontext
         for epoch in range(self.current_epoch, self.total_epoch):
@@ -388,6 +419,12 @@ class Trainer:
             accumlate_count = 0
             moving_total_loss = 0
 
+            # before train_epoch
+            self.exec_callbacks(
+                stage="before_train_epoch",
+                value={},
+            )
+            self.before_train_loop(value={})
             with tqdm(
                 enumerate(self.train_dataloader),
                 total=len(self.train_dataloader),
@@ -396,7 +433,7 @@ class Trainer:
             ) as tbar:
                 self.tbar = tbar  # 用于日志模块的在tqdm中的调用
                 if isinstance(self.model, torch.nn.parallel.DistributedDataParallel):
-                            context = self.model.join
+                    context = self.model.join
                 else:
                     context = contextlib.nullcontext
                 with context():
@@ -425,7 +462,9 @@ class Trainer:
                                 avg_accumulate_loss = (
                                     avg_accumulate_loss + loss.detach().item()
                                 )
-                                moving_total_loss = moving_total_loss + loss.detach().item()
+                                moving_total_loss = (
+                                    moving_total_loss + loss.detach().item()
+                                )
                                 accumlate_count += 1
                             self.scalar.scale(loss).backward()
 
@@ -465,7 +504,15 @@ class Trainer:
                             )
                             avg_accumulate_loss = 0.0
                             accumlate_count = 0
-            # after train_loop回调
+                            self.current_step += 1
+            # do swa
+            if (
+                self.use_swa
+                and self.current_epoch > self.swa_config[1] * self.total_epoch
+            ):
+                logging.info("doing Stochastic Weight Averaging")
+                self.swa_model.update_parameters(self.model)
+            # after train_epoch回调
             self.exec_callbacks(
                 stage="after_train_epoch",
                 value={},
@@ -485,7 +532,7 @@ class Trainer:
                 self.tbar = tbar  # 用于日志模块的在tqdm中的调用
 
                 for i, batch in tbar:
-                    if i > self.train_data_factor * len(self.train_dataloader):
+                    if i > self.train_data_factor * len(self.val_dataloader):
                         break  # 用于快速验证数据训练流程
                     with torch.no_grad():
                         batch = self.batch_to_device(batch)
@@ -526,6 +573,29 @@ class Trainer:
                     "epoch": self.current_epoch,
                 },
             )
+        # eoch loop end
+        # swa bn
+        if self.use_swa:
+            self.model.train()
+            with tqdm(
+                enumerate(self.train_dataloader),
+                total=len(self.train_dataloader),
+                desc="swa bn update...",
+                disable=self.local_rank > 0,
+            ) as tbar:
+                self.tbar = tbar
+                for i, batch in tbar:
+                    if i > self.train_data_factor * len(self.train_dataloader):
+                        break  # 用于快速验证数据训练流程
+                    with torch.no_grad():
+                        batch = self.batch_to_device(batch)
+                        eval_out = self.eval_loop(batch)
+                self.exec_callbacks(
+                    stage="after_eval_epoch",
+                    value={
+                        "swa": True
+                    },
+                )
 
     # 测试需要什么： model, dataset
     def test(self, ccml_module, dataset: Dataset, dataloader_params: dict):
@@ -533,12 +603,13 @@ class Trainer:
         self.ccml_module = ccml_module
         self.dataloader_params = dataloader_params
         self.trainer_prepare()
+        self.ccml_module.point_trainer(self)
         self.ccml_module.model.eval()
         all_test_results = []
         moving_total_loss = 0.0
         with tqdm(
-            enumerate(dataset),
-            total=len(dataset),
+            enumerate(self.test_dataloader),
+            total=len(self.test_dataloader),
             desc="测试中",
         ) as tbar:
             self.tbar = tbar  # 用于日志模块的在tqdm中的调用
@@ -549,10 +620,11 @@ class Trainer:
                     eval_out = self.test_loop(batch)
                     all_test_results.append(self.detach_dict(eval_out))
                 moving_avg_loss = moving_total_loss / (i + 1)
+        self.ccml_module.test_loop_end(all_test_results)
         self.exec_callbacks(
-            stage="after_test",
+            stage="test_loop_end",
             value={
-                "avg_test_loss": moving_total_loss / (i + 1),
+                "avg_test_loss": moving_avg_loss,
                 "all_test_results": all_test_results,
             },
         )
@@ -635,9 +707,14 @@ class Trainer:
         return new_dict
 
     def batch_to_device(self, batch: List[Any]):
+        batch = list(batch)
         for i in range(len(batch)):
             if isinstance(batch[i], torch.Tensor):
                 batch[i] = batch[i].to(self.device)
+            if isinstance(batch[i], list):
+                for j in range(len(batch[i])):
+                    if isinstance(batch[i][j], torch.Tensor):
+                        batch[i][j] = batch[i][j].to(self.device)
         return batch
 
 
