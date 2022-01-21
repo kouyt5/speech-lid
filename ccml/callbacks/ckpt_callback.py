@@ -47,29 +47,30 @@ class CkptCallback(Callback):
         """
         file_name = ""
         for name in file_name_metric:
+            file_name += str(name) + "_"
             if name in value.keys():
-                file_name += str(name) + "_"
                 if isinstance(value[name], int):
                     file_name += str(value[name]) + "_"
                 else:
-                    file_name += "{:.2f}".format(name) + "_"
+                    file_name += "{:.2f}".format(value[name]) + "_"
             else:  # 一定在all_val_results中
-                total_values = 0.
-                total_count = 0.
+                logging.debug(f"key {name} is not in dict, compute avg now...")
+                total_values = 0.0
+                total_count = 0.0
                 if "all_val_results" not in value.keys():
                     logging.warning(f"结果中没有key all_val_results, break")
                     continue
                 for item in value["all_val_results"]:
                     if name not in item.keys():
-                        logging.warning(f"结果中没有key{name}, break")
+                        logging.warning(f"结果中没有key {name}, break")
                         break
                     total_values += item[name]
                     total_count += 1
                 if total_count != 0:
-                    file_name += "{:.2f}".format(total_values/total_count) + "_"
+                    file_name += "{:.2f}".format(total_values / total_count) + "_"
         if len(file_name) == 0:
-            file_name = "default_"+ str(uuid.uuid4())[:4]
-        file_name = file_name .strip("_") + ".pt"
+            file_name = "default_" + str(uuid.uuid4())[:4]
+        file_name = file_name.strip("_") + ".pt"
         return os.path.join(self.ckpt_path, file_name)
 
     def get_state(self) -> dict:
@@ -92,14 +93,20 @@ class CkptCallback(Callback):
         return state
 
     def after_eval_epoch(self, value: dict):
+        logging.info("checkpint saving...")
         self.after_eval_epoch_count += 1
         if self.after_eval_epoch_count % self.interval != 0:
             return
         if self.trainer.local_rank > 0:  # 非master节点不保存ckpt
             return
         state = self.get_state()
-        torch.save(state, os.path.join(self.ckpt_path, "last.pt"))
-
+        if "swa" in value:
+            last_ckpt_path = os.path.join(self.ckpt_path, "swa_final.pt")
+            torch.save(state, last_ckpt_path)
+            return
+        last_ckpt_path = os.path.join(self.ckpt_path, "last.pt")
+        torch.save(state, last_ckpt_path)
+        logging.info(f"save last ckpt to {last_ckpt_path}")
         if self.topk_queue.full():
             [priority, old_path] = self.topk_queue.get()  # 获取优先级最高的元素
 
@@ -108,25 +115,25 @@ class CkptCallback(Callback):
                 # 保存topk
                 save_path = self.parse2abspath(value, self.parttern)
                 # 从队列中取一个最小值（优先级最高）
-                if self.manager == "min":
-                    if metric < 1 / priority:
-                        priority = 1 / metric
-                        self.topk_queue.put([priority, save_path])
-                        torch.save(state, save_path)
-                        os.remove(old_path)
-                        logging.info(f"save a ckpt in {save_path}")
-                elif self.manager == "max":
-                    if metric > priority:
-                        priority = metric
-                        self.topk_queue.put([priority, save_path])
-                        torch.save(state, save_path)
-                        os.remove(old_path)
-                        logging.info(f"save a ckpt in {save_path}")
+                if self.manager == "min" and metric < 1 / priority:
+                    priority = 1 / metric
+                    self.topk_queue.put([priority, save_path])
+                    torch.save(state, save_path)
+                    os.remove(old_path)
+                    logging.info(f"save a ckpt in {save_path}")
+                elif self.manager == "max" and metric > priority:
+                    priority = metric
+                    self.topk_queue.put([priority, save_path])
+                    torch.save(state, save_path)
+                    os.remove(old_path)
+                    logging.info(f"save a ckpt in {save_path}")
+                else:
+                    self.topk_queue.put([priority, old_path])
         else:
             metric = self.result_has_key(value, self.metric)
             save_path = self.parse2abspath(value, self.parttern)
             torch.save(state, save_path)
-            self.topk_queue.put([1/metric, save_path])
+            self.topk_queue.put([1 / metric, save_path])
             logging.info(f"save a ckpt in {save_path}")
 
     def result_has_key(self, target: dict, key: str):
