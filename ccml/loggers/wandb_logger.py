@@ -25,7 +25,7 @@ class WandbLogger(BaseLogger):
                 id=wandb_id,
                 group=group,
             )
-            logging.info(f"wandb 初始化完成: checkpoint=" + str(self.checkpint_path))
+            logging.info(f"wandb 初始化完成")
         else:
             wandb.init(
                 project=project, entity=entity, name=name, save_code=True, group=group
