@@ -239,6 +239,7 @@ class Trainer:
         val_batch_size: int = 4,
         pin_memory: bool = True,
         num_workers: int = 0,
+        prefetch_factor: int = 2,
     ):
         """初始化数据加载器，对train_dataloader等做封装
 
@@ -274,6 +275,7 @@ class Trainer:
                 shuffle=(self.train_sampler is None),
                 drop_last=True,
                 collate_fn=train_collate_fn,
+                prefetch_factor=prefetch_factor,
             )
             self.val_dataloader = DataLoader(
                 self.val_dataset,
@@ -283,6 +285,7 @@ class Trainer:
                 pin_memory=pin_memory,
                 shuffle=False,
                 collate_fn=val_collate_fn,
+                prefetch_factor=prefetch_factor,
             )
         test_collate_fn = (
             self.test_dataset.collate_fn
@@ -518,6 +521,9 @@ class Trainer:
                 value={},
             )
             self.train_loop_end(all_train_results)
+            if not self.current_epoch % self.eval_interval == self.eval_interval - 1:
+                continue
+            
             # 验证开始
             self.model.eval()
             all_val_results = []
@@ -592,9 +598,7 @@ class Trainer:
                         eval_out = self.eval_loop(batch)
                 self.exec_callbacks(
                     stage="after_eval_epoch",
-                    value={
-                        "swa": True
-                    },
+                    value={"swa": True},
                 )
 
     # 测试需要什么： model, dataset
