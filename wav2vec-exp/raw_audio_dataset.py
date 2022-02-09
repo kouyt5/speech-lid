@@ -17,6 +17,7 @@ class RawAudioDatasets(Dataset):
         mask=False,
         sr=16000,
         tokenizer: CTCTokenizer = None,
+        upper:bool = False
     ) -> None:
         super().__init__()
         self.mask = mask
@@ -32,6 +33,8 @@ class RawAudioDatasets(Dataset):
                 with open(item, encoding="utf-8") as f:
                     for line in f.readlines():
                         data = json.loads(line, encoding="utf-8")
+                        if upper:
+                            data['text'] = data['text'].upper()
                         if data["duration"] > max_duration:
                             total_filter_count += 1
                             total_filter_duration += data["duration"]
@@ -43,6 +46,8 @@ class RawAudioDatasets(Dataset):
             with open(manifest_path, encoding="utf-8") as f:
                 for line in f.readlines():
                     data = json.loads(line, encoding="utf-8")
+                    if upper:
+                            data['text'] = data['text'].upper()
                     if data["duration"] > max_duration:
                         total_filter_count += 1
                         total_filter_duration += data["duration"]

@@ -36,7 +36,7 @@ from fairseq.file_io import PathManager
 
 
 class UpstreamExpert(UpstreamBase):
-    def __init__(self, ckpt, drop_layer, **kwargs):
+    def __init__(self, ckpt, drop_layer, mask=False, **kwargs):
         super().__init__(**kwargs)
         assert version.parse(fairseq.__version__) > version.parse(
             "0.10.2"
@@ -52,6 +52,7 @@ class UpstreamExpert(UpstreamBase):
         # See utility/compare_wav2vec2.py
         self.apply_padding_mask = True
         self.numpy_wav_normalize = False
+        self.mask = mask
 
         if len(self.hooks) == 0:
             module_name = "self.model.encoder.layers"
@@ -84,7 +85,7 @@ class UpstreamExpert(UpstreamBase):
         self.model.extract_features(
             padded_wav,
             wav_padding_mask if self.apply_padding_mask else None,
-            mask=self.apply_padding_mask if self.model.training else False,
+            mask=self.mask if self.model.training else False,
         )
 
         # This forward function only does the model forward
@@ -208,7 +209,7 @@ def load_wav2vec2_for_finetune(ckpt_path: str, drop_layer: bool = False):
         logging.info("turn on the layer dropout")
     cfg.model["mask_channel_length"] = 64
     cfg.model["mask_channel_prob"] = 0.2
-    cfg.model["mask_prob"] = 0.65
+    cfg.model["mask_prob"] = 0.25
     # cfg.model["quantize_targets"] = False
     model = Wav2Vec2Model.build_model(cfg.model)
     model.load_state_dict(state["model"], strict=True, model_cfg=cfg.model)

@@ -1,0 +1,21 @@
+program: wav2vec-exp/main_lm_search.py
+method: bayes
+metric:
+  goal: minimize
+  name: test_wer
+parameters:
+  beam_width:
+    values: [20, 50, 100, 200, 500, 1000]
+  cutoff_top_n:
+    values: [20, 30, 40]
+  alpha:
+    min: 0.5
+    max: 4.0
+  beta:
+    min: -2.0
+    max: 2.0
+early_terminate:
+  type: hyperband
+  s: 2
+  eta: 3
+  max_iter: 27

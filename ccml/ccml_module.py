@@ -148,8 +148,8 @@ class CCMLModule:
         """
         pass
 
-    @staticmethod
-    def resume_from_checkpoint(checkpont: str, map_location: str) -> nn.Module:
+    @classmethod
+    def resume_from_checkpoint(cls, checkpont: str, map_location: str) -> nn.Module:
         """从checkpoint恢复模型状态
 
         Args:
@@ -164,6 +164,6 @@ class CCMLModule:
         hyper_parameters = {}
         if "hyper_parameters" in stat_dicts.keys():
             hyper_parameters = stat_dicts["hyper_parameters"]
-        agent_model = CCMLModule(**hyper_parameters).to(device)
-        agent_model.get_model().load_state_dict(state_dict=stat_dicts["model"])
+        agent_model = cls(**hyper_parameters)
+        agent_model.get_model().to(device).load_state_dict(state_dict=stat_dicts["model"])
         return agent_model

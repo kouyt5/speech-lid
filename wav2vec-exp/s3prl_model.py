@@ -15,15 +15,24 @@ class S3prlModel(nn.Module):
         dropout: float = 0.0,
         vocab_size: int = 29,
         linear_dim: int = 768,
+        use_cer: bool = False,
+        mask: bool = True
     ) -> None:
         super().__init__()
         drop_layer = feature_selection == "last_hidden_state"
         self.featurizer = Featurizer(
-            upstream=UpstreamExpert(ckpt=pt_path, drop_layer=drop_layer),
+            upstream=UpstreamExpert(ckpt=pt_path, drop_layer=drop_layer, mask=mask),
             feature_selection=feature_selection,  # last_hidden_state, hidden_state_{0-24}
             upstream_device="cpu",
             layer_selection=None,  # 选择后的第几层特征 0-24
         )
+        self.rnn = nn.LSTM(
+            input_size=linear_dim,
+            batch_first=True,  # input = (batch, seq, feature)
+            hidden_size=linear_dim // 2,
+            num_layers=1,
+            dropout = dropout,
+            bidirectional = True)
         self.last_linear = nn.Sequential(
             OrderedDict(
                 {
@@ -32,8 +41,8 @@ class S3prlModel(nn.Module):
                 }
             )
         )
-        self.loss_fn = nn.CTCLoss(blank=vocab_size - 1, reduction="none")
-        self.wer_fn = torchmetrics.WER()
+        self.loss_fn = nn.CTCLoss(blank=vocab_size - 1, reduction="none", zero_infinity=True)
+        self.wer_fn = torchmetrics.WER() if not use_cer else torchmetrics.CharErrorRate()
 
     def forward(self, batch: List = None) -> Tuple[torch.Tensor]:
         """[summary]
@@ -47,7 +56,15 @@ class S3prlModel(nn.Module):
         """
         paired_features = self.featurizer.upstream(batch)
         feature = self.featurizer(batch, paired_features)
-        out = self.last_linear(feature)
+        max_len = max(batch, key=lambda x:x.shape[0]).shape[0]
+        percents = [item.shape[0]/max_len for item in batch]
+        feature_len = [percent*(feature.shape[1]) for percent in percents]
+        length = torch.floor(torch.Tensor(feature_len)).long()
+        x = nn.utils.rnn.pack_padded_sequence(feature, enforce_sorted=False,
+                                              lengths=length, batch_first=True)
+        x, h = self.rnn(x)
+        x, _ = nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
+        out = self.last_linear(x)
         return out
 
     def freeze_feature_extractor(self):
