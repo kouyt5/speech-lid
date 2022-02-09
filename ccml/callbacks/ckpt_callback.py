@@ -156,6 +156,10 @@ class CkptCallback(Callback):
         total_values = 0.0
         total_count = 0.0
         for item in target["all_val_results"]:
+            if isinstance(item[key], torch.Tensor):
+                if torch.isnan(item[key]).item():
+                    logging.warning("key is nan, and it will be ignored.")
+                    continue
             total_values += item[key]
             total_count += 1
         return total_values / total_count
