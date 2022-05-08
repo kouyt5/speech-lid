@@ -48,7 +48,8 @@ def main(config=None):
     if config.exp_name is None:
         config.exp_name = f"lr{config.lr}_dr{config.dropout}"\
             f"_de_freeze{config.freeze_decoder_epoch}"\
-                f"_en_freeze_{config.freeze_encoder_epoch}_bs{config.train_bs}"
+                f"_en_freeze_{config.freeze_encoder_epoch}_bs{config.train_bs}"\
+                    f"_lstm_{config.num_layer}_glu_{config.use_glu}"
     if config.ckpt_path is None:
         config.ckpt_path = f'exp/{config.exp_name}'
     wandb_logger = WandbLogger(
@@ -112,9 +113,9 @@ def main(config=None):
 
         lm_model = BeamSearchDecoderWithLM(
             tokenizer.export_vocab(),
-            beam_width=1500,
-            alpha=3.6,
-            beta=0.04,
+            beam_width=100,
+            alpha=1,
+            beta=0.5,
             lm_path=config.lm_path,
             num_cpus=12,
             cutoff_prob=1,
@@ -138,6 +139,8 @@ def main(config=None):
         optimizer_name=config.optimizer_name,
         feature_mask=config.no_mask,
         lm_model=lm_model,
+        num_layers=config.num_layer,
+        glu=config.use_glu
     )
     if config.stage == "test":
         trainer.test(ccml_module, val_dataset, dataloader_params=dataloader_params)
@@ -210,6 +213,8 @@ if __name__ == "__main__":
         default=768,
         help="768 for base, 1024 for large or xlsr",
     )
+    parse.add_argument("--num_layer", type=int, default=1)
+    parse.add_argument("--use_glu", action="store_true")
     parse.add_argument("--total_epoch", type=int, default=40)
     parse.add_argument("--train_bs", type=int, default=4)
     parse.add_argument("--val_bs", type=int, default=4)

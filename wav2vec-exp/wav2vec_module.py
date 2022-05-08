@@ -28,6 +28,8 @@ class Wav2vecModule(CCMLModule):
         use_cer: bool = False,
         optimizer_name: str = "adam",  # adam novograd
         lm_model: torch.nn.Module = None,
+        num_layers:int = 1,
+        glu:bool = False, 
         *args,
         **kwargs,
     ):
@@ -42,6 +44,8 @@ class Wav2vecModule(CCMLModule):
             linear_dim=linear_dim,
             use_cer=use_cer,
             mask=feature_mask,
+            num_layers=num_layers,
+            glu=glu
         )
         if reset_param:
             logging.info("reset parameters...")
@@ -55,6 +59,8 @@ class Wav2vecModule(CCMLModule):
                 "dropout": dropout,
                 "vocab_size": vocab_size,
                 "linear_dim": linear_dim,
+                "num_layers": num_layers,
+                "glu": glu
             }
         )
         self.lr = lr
@@ -96,7 +102,7 @@ class Wav2vecModule(CCMLModule):
         out, loss, wer, predict_texts, label_texts = self.common_loop(batch)
 
         if self.trainer.current_step % self.metric_interval == self.metric_interval - 1:
-            logging.info("current wer = " + str(wer))
+            logging.info("current wer = " + str(wer)+'\n')
             logging.info("predict:" + predict_texts[0])
             logging.info(" labels:" + label_texts[0] + "\n")
 
