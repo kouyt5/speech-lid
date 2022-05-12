@@ -187,6 +187,10 @@ class RMLModule(CCMLModule):
             optimizer = torch.optim.Adam(
                 self.model.parameters(), lr=self.lr, weight_decay=self.wc
             )
+        elif self.optim_name == "adamw":
+            optimizer = torch.optim.AdamW(
+                self.model.parameters(), lr=self.lr, weight_decay=self.wc
+            )
         else:
             logging.error(f"{self.optim_name} is not support...")
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
