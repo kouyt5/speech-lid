@@ -2,20 +2,37 @@ defaults:
   - base: custom  # 基本的日志配置
 
 model:
-  dropout: 0.0
-  linear_dim: 144
-  mask: True
-  num_layers: 1
-  hidden_dim: 64
   model_name: &model_name >- 
-    lr_${module.optimizer_param.lr}_dr_${model.dropout}_mask_${model.mask_prob}_cmask_${model.mask_channel_prob}_bs_${data.sampler_common.train_batch_size}_conform_${module.conformer_linear}
-  pt_path: /home/cc/workdir/code/lid/wavlm/ckpts/wavlm-base-cfg.pt
-  feature_selection: "hidden_states"
-  use_pre_train: false
-  mask_channel_prob: 0.0
-  double_swish: false
-  mask_prob: 0.0
+    lr_${module.optimizer_param.lr}_dr_${model.dropout}_bs_${data.sampler_common.train_batch_size}_conform_${model.conformer_linear}
+  
   conformer_pure: true
+
+  num_layers: 1  # LSTM层数
+  hidden_dim: 32  # 语种识别模型隐藏层维度
+  use_cer: true
+  conformer_linear: true
+  dropout: 0.0  # 最后的线性映射层dropout
+  linear_dim: 144  # 最后线性层输入维度
+  n_blocks: 14
+  win_len: 0.025
+  hop_length: 0.01
+  sr: 16000
+  n_mels: 80
+  encoder_dim: 144  # 和linear_dim保持一致
+  t_mask_prob:  0.05  # 时域mask概率
+  f_mask: 27
+  mask_times: 2  # mask次数
+  dim_head: 64  # att head 维度
+  heads: 4  # att head数
+  ff_mult: 4
+  conv_expansion_factor: 2
+  conv_kernel_size: 31
+  attn_dropout: 0.0
+  ff_dropout: 0.0
+  conv_dropout: 0.0
+  double_swish: false
+
+supervised: true  # 走监督训练module
 
 module:
   optimizer_name: novograd
@@ -30,21 +47,18 @@ module:
     factor: 0.1
     patience: 5
     cooldown: 3
-    min_lr: 0.0001
-  sr: 16000
+    min_lr: 0.0005
   interval: 50
   freeze_tranformer_epoch: -1
   freeze_encoder_epoch: -1
   froze_wav2vec_model_epoch: -1
-  use_wav2vec: false
-  conformer_linear: true
 
 data:
   source: xf_asr
   dataloader_params:
     pin_memory: true
-    num_workers: 0
-    # prefetch_factor: 10
+    num_workers: 6
+    prefetch_factor: 10
     train_batch_sampler: null
     val_batch_sampler: null
     test_batch_sampler: null

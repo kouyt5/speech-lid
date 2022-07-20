@@ -6,11 +6,10 @@ import torch
 from ccml.ccml_module import CCMLModule
 from ccml.optim.novograd import Novograd
 from ccml.optim.tri_state import TriStageLRSchedule
-from lid.Wav2vecMutiLangModel import Wav2vecMutiLangModel
-from lid.WavLMMutiLangModel import WavLMMutiLangModel
+from lid.ConformerLangModel import ConformerMutiLangModel
 
 
-class LidModule(CCMLModule):
+class LidSuperviseModule(CCMLModule):
     def __init__(
         self,
         optimizer_name: str = "adam",
@@ -18,45 +17,59 @@ class LidModule(CCMLModule):
         scheduler: str = "reduce",
         scheduler_param: Dict = None,
         interval: int = 10,
-        freeze_tranformer_epoch: int = 1,
-        freeze_encoder_epoch: int = 100,
-        froze_wav2vec_model_epoch: int = 100,
-        pt_path: str = None,
-        feature_selection: str = "hidden_states",
-        dropout: float = 0.0,
-        linear_dim: int = 768,
-        mask: bool = True,
-        num_layers: int = 1,
-        hidden_dim: int = 128,
-        lang2vocab: Dict = None,  # {"cn": 4442}) -> None
         lang2index_dict: Dict = None,
         tokenizer_dict: Dict = None,
-        use_wav2vec: bool = False,
-        conformer_linear: bool = False,
-        double_swish: bool = False,
-        use_pre_train:bool = True,
-        mask_channel_prob:float=0.,
-        mask_prob:float = 0.,
-        sr: int = 22050,
-        conformer_pure: bool = False,  # 兼容conformer监督模型
+        lang2vocab: Dict = None,  # {"cn": 4442}) -> None
+    
+        num_layers: int = 1,  # LSTM层数
+        hidden_dim: int = 32,  # 语种识别模型隐藏层维度
+        use_cer: bool = True,
+        conformer_linear: bool = True,
+        dropout: float = 0.0,  # 最后的线性映射层dropout
+        linear_dim: int = 144,  # 最后线性层输入维度
+        n_blocks: int = 14,
+        win_len=0.025,
+        hop_length: float = 0.01,
+        sr=16000,
+        n_mels: int = 80,
+        encoder_dim: int = 144,  # 和linear_dim保持一致
+        t_mask_prob: float = 0.05,  # 时域mask概率
+        f_mask=27,
+        mask_times: int = 2,  # mask次数
+        dim_head=64,  # att head 维度
+        heads=4,  # att head数
+        ff_mult=4,
+        conv_expansion_factor=2,
+        conv_kernel_size=31,
+        attn_dropout=0.0,
+        ff_dropout=0.0,
+        conv_dropout=0.0,
+        double_swish=False,
         *args,
         **kwargs,
     ):
         super().__init__(
-            pt_path=pt_path,
-            feature_selection=feature_selection,
-            linear_dim=linear_dim,
-            mask=mask,
-            num_layers=num_layers,
-            hidden_dim=hidden_dim,
             lang2vocab=lang2vocab,
             lang2index_dict=lang2index_dict,
             tokenizer_dict=tokenizer_dict,
-            use_wav2vec=use_wav2vec,
-            conformer_linear=conformer_linear,
+        
+            num_layers=num_layers,
+            hidden_dim=hidden_dim,  # 语种识别隐藏层
+            conformer_linear = conformer_linear,
+            linear_dim = linear_dim,  # 最后线性层输入维度
+            n_blocks = n_blocks,  # Conformer 模型参数
+            win_len= win_len,
+            hop_length = hop_length,
+            sr=sr,
+            n_mels = n_mels,
+            encoder_dim = encoder_dim,
+            dim_head=dim_head,
+            heads=heads,
+            ff_mult=ff_mult,
+            conv_expansion_factor=conv_expansion_factor,
+            conv_kernel_size=conv_kernel_size,
             double_swish=double_swish,
-            mask_channel_prob=mask_channel_prob,
-            mask_prob=mask_prob
+            lang2index=lang2index_dict,  # 语种判别模块
         )
         self.optimizer_name = optimizer_name
         self.optimizer_param = optimizer_param
@@ -64,9 +77,9 @@ class LidModule(CCMLModule):
         self.scheduler_param = scheduler_param
         self.lang2index_dict = lang2index_dict
         self.interval = interval
-        self.freeze_tranformer_epoch = freeze_tranformer_epoch
-        self.freeze_encoder_epoch = freeze_encoder_epoch
-        self.froze_wav2vec_model_epoch = froze_wav2vec_model_epoch
+        self.freeze_tranformer_epoch = -1
+        self.freeze_encoder_epoch = -1
+        self.froze_wav2vec_model_epoch = -1
         self.sr = sr
         self.index2lang_dict = {}
         for key in self.lang2index_dict.keys():
@@ -74,37 +87,36 @@ class LidModule(CCMLModule):
         self.tokenizer_dict = tokenizer_dict
 
         logging.info(f"采样率: {sr}")
-        logging.info(f"使用double swish: {double_swish}, mask channel prob{mask_channel_prob}")
-        if use_wav2vec:
-            self.model = Wav2vecMutiLangModel(
-                pt_path=pt_path,
-                feature_selection=feature_selection,
-                dropout=dropout,
-                linear_dim=linear_dim,
-                mask=mask,
-                num_layers=num_layers,
-                lang2vocab=lang2vocab,  # {"cn": 4442}) -> None
-                lang2index=lang2index_dict,
-                hidden_dim=hidden_dim,
-            )
-        else:
-            self.model = WavLMMutiLangModel(
-                pt_path=pt_path,
-                feature_selection=feature_selection,
-                dropout=dropout,
-                linear_dim=linear_dim,
-                mask=mask,
-                num_layers=num_layers,
-                lang2vocab=lang2vocab,  # {"cn": 4442}) -> None
-                lang2index=lang2index_dict,
-                hidden_dim=hidden_dim,
-                conformer_linear=conformer_linear,
-                double_swish=double_swish,
-                use_pre_train=use_pre_train,
-                mask_channel_prob=mask_channel_prob,
-                mask_prob=mask_prob,
-                conformer_pure=conformer_pure
-            )
+        logging.info(f"使用double swish: {double_swish}")
+        self.model = ConformerMutiLangModel(
+            num_layers = num_layers,
+            lang2vocab = lang2vocab,  # {"cn": 4442}
+            use_cer = use_cer,
+            conformer_linear = conformer_linear,
+            dropout = dropout,  # 最后的线性映射层dropout
+            linear_dim = linear_dim,  # 最后线性层输入维度
+            n_blocks = n_blocks,  # Conformer 模型参数
+            win_len= win_len,
+            hop_length = hop_length,
+            sr=sr,
+            n_mels = n_mels,
+            encoder_dim = encoder_dim,
+            t_mask_prob = t_mask_prob,
+            f_mask=f_mask,
+            mask_times = mask_times,
+            dim_head=dim_head,
+            heads=heads,
+            ff_mult=ff_mult,
+            conv_expansion_factor=conv_expansion_factor,
+            conv_kernel_size=conv_kernel_size,
+            attn_dropout=attn_dropout,
+            ff_dropout=ff_dropout,
+            conv_dropout=conv_dropout,
+            double_swish=double_swish,
+            
+            lang2index=lang2index_dict,  # 语种判别模块
+            hidden_dim=hidden_dim
+        )
         self.count = 1
         self.avg_loss = 0
         self.avg_wer = 0
@@ -250,13 +262,6 @@ class LidModule(CCMLModule):
         else:
             self.model.unfreeze_tranformer_encoder()
             logging.info("unfreeze tranformer")
-        # 语种判别固定wav2vec模型
-        # if epoch <= self.froze_wav2vec_model_epoch:
-        #     self.model.froze_wav2vec_model()
-        #     logging.info("froze wav2vec and rnn")
-        # else:
-        #     self.model.unfroze_wav2vec_model()
-        #     logging.info("unfroze wav2vec and rnn")
 
     def train_loop_end(self, outputs: List[Any] = None):
         self.count = 1
