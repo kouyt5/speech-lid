@@ -1,0 +1,23 @@
+program: test.py
+method: bayes
+metric:
+  goal: minimize
+  name: test_cer
+parameters:
+  beam_width:
+    values: [500, 1000, 1500, 2000]
+  cutoff_top_n:
+    values: [20, 30, 40, 50]
+  pe_lm_path:
+    values: ["/home/cc/workdir/code/lid/data/xf/lm/github/all/v1/outv1pe3gram.arpa", "/home/cc/workdir/code/lid/data/xf/lm/per3gram.arpa"]
+  alpha:
+    min: -1.0
+    max: 5.0
+  beta:
+    min: -3.0
+    max: 5.0
+early_terminate:
+  type: hyperband
+  s: 2
+  eta: 3
+  max_iter: 27

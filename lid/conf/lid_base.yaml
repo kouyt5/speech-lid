@@ -2,6 +2,137 @@ defaults:
   - base: custom  # 基本的日志配置
 
 model:
-  model_name: &model_name lid_base
-  layer1:
-    num_cnn: 2
+  dropout: 0.0
+  linear_dim: 768
+  mask: True
+  num_layers: 1
+  hidden_dim: 32
+  model_name: &model_name >- 
+    lr_${module.optimizer_param.lr}_dr_${model.dropout}_opti_${module.optimizer_name}_bs_${data.sampler_common.train_batch_size}_conform_${module.conformer_linear}
+  pt_path: /home/cc/workdir/code/wav2vec-exp/ckpts/wav2vec_small.pt
+  feature_selection: "hidden_states"
+
+module:
+  optimizer_name: adam
+  optimizer_param:
+    # momentum: 0.9
+    weight_decay: 0.000001
+    # nesterov: false
+    lr: 0.0001
+  scheduler: tristage  # tristage
+  scheduler_param:
+    mode: min
+    factor: 0.1
+    patience: 5
+    cooldown: 3
+    min_lr: 0.00001
+  sr: 22050
+  interval: 50
+  freeze_tranformer_epoch: 1
+  freeze_encoder_epoch: 100
+  froze_wav2vec_model_epoch: -1
+  use_wav2vec: true
+  conformer_linear: false
+
+data:
+source: common_voice
+  dataloader_params:
+    pin_memory: true
+    num_workers: 6
+    prefetch_factor: 10
+    train_batch_sampler: null
+    val_batch_sampler: null
+    test_batch_sampler: null
+  langs:
+    -
+      # train_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-CN/train.tsv  # 23540
+      train_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-CN/zh-CN-train4k.tsv
+      # val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-CN/dev.tsv  # 9741
+      # val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-CN/zh-CN-dev4k.tsv
+      val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-CN/zh-CN-dev1k.tsv
+      test_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-CN/test.tsv  # 9748
+      # test_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-CN/test1k.tsv
+      lang: zh-CN
+      id: 0
+      vocab: /home/cc/workdir/code/lid/data/zh-CN-vocab-simple.txt
+    -
+      # train_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-TW/train.tsv  # 6394
+      train_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-TW/train4k.tsv
+      # val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-TW/dev.tsv  # 4619
+      val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-TW/dev1k.tsv
+      test_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-TW/test.tsv  # 4619
+      lang: zh-TW
+      id: 1
+      vocab: /home/cc/workdir/code/lid/data/zh-TW-vocab-simple.txt
+    -
+      # train_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/en/dev.tsv  # 16336
+      train_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/en//en-dev4k.tsv
+      # val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/en/test.tsv  # 16336
+      # val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/en/en-test4k.tsv
+      val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/en/en-test1k.tsv
+      test_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/en/test.tsv
+      lang: en
+      id: 2
+      vocab: /home/cc/workdir/code/lid/data/en-vocab-simple.txt
+    -
+      # train_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/ja/train.tsv  # 6213
+      train_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/ja/train4k.tsv
+      # val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/ja/dev.tsv  # 4446
+      val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/ja/dev1k.tsv  # 4446
+      test_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/ja/test.tsv  # 4496
+      lang: ja
+      id: 3
+      vocab: /home/cc/workdir/code/lid/data/ja-vocab-simple.txt
+    -
+      # train_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/ru/train.tsv  # 21910
+      train_manifest:  /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/ru/ru-train4k.tsv
+      # val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/ru/dev.tsv  # 9458
+      # val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/ru/ru-dev4k.tsv
+      val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/ru/ru-dev1k.tsv
+      test_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/ru/test.tsv  # 9457
+      lang: ru
+      id: 4
+      vocab: /home/cc/workdir/code/lid/data/ru-vocab-simple.txt
+    -
+      # train_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/hi/train.tsv  # 4218
+      train_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/hi/train4k.tsv
+      # val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/hi/dev.tsv  # 2065
+      val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/hi/dev1k.tsv  # 2065
+      test_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/hi/test.tsv  # 2840
+      lang: hi
+      id: 5
+      vocab: /home/cc/workdir/code/lid/data/hi-vocab-simple.txt
+
+  sampler_common:
+    train_batch_size: 4
+    val_batch_size: 4
+    test_batch_size: 1
+  max_duration: 16.7
+
+trainer:
+  total_epoch: 40
+  gpu_id: 0
+  local_rank: 0
+  world_size: 1
+  ddp: false
+  backend: 'nccl'
+  init_method: env://  # 目前只支持env初始化
+  accumulate_grad: 1
+  master_addr: localhost
+  master_port: 11488
+  use_amp: true
+  use_swa: false
+  eval_interval: 1
+  train_data_factor: 1.0
+  log_interval: 10
+  checkpoint_path: null  # trainer 的checkpoint
+  resume_train_states: True
+
+logger:
+  wandb:
+    project: lid
+    entity: kouyt5
+    name: *model_name
+    wandb_id: null
+
+stage: train  # test, train

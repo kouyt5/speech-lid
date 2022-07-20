@@ -1,0 +1,108 @@
+defaults:
+  - base: custom  # 基本的日志配置
+
+model:
+  dropout: 0.0
+  linear_dim: 768
+  mask: True
+  num_layers: 1
+  hidden_dim: 64
+  model_name: &model_name >- 
+    lr_${module.optimizer_param.lr}_dr_${model.dropout}_mask_${model.mask_prob}_cmask_${model.mask_channel_prob}_bs_${data.sampler_common.train_batch_size}_conform_${module.conformer_linear}
+  pt_path: /home/cc/workdir/code/lid/wavlm/ckpts/WavLM-Base-plus.pt
+  feature_selection: "hidden_states"          
+  use_pre_train: true
+  mask_channel_prob: 0.
+  double_swish: false
+  mask_prob: 0.
+
+module:
+  optimizer_name: adam
+  optimizer_param:
+    # momentum: 0.9
+    weight_decay: 0.00001
+    # nesterov: false
+    lr: 0.001
+  scheduler: tristage  # tristage
+  scheduler_param:
+    mode: min
+    factor: 0.1
+    patience: 5
+    cooldown: 3
+    min_lr: 0.00001
+  sr: 16000
+  interval: 50
+  freeze_tranformer_epoch: 1
+  freeze_encoder_epoch: 100
+  froze_wav2vec_model_epoch: -1
+  use_wav2vec: true
+  conformer_linear: false
+
+data:
+  source: xf_asr
+  dataloader_params:
+    pin_memory: true
+    num_workers: 6
+    prefetch_factor: 10
+    train_batch_sampler: null
+    val_batch_sampler: null
+    test_batch_sampler: null
+  langs:
+    -
+      train_manifest: /home/cc/workdir/code/lid/data/xf/data/Persian/train9_cv_all.label  # 50933
+      val_manifest: /home/cc/workdir/code/lid/data/xf/data/Persian/dev100.label
+      test_manifest: /home/cc/workdir/code/lid/data/xf/data/Persian/dev100.label
+      lang: Persian
+      id: 0
+      vocab: /home/cc/workdir/code/lid/data/xf/data/Persian-vocab.txt
+    -
+      # train_manifest: /home/cc/workdir/code/lid/data/xf/data/Swahili/train9.label
+      train_manifest: /home/cc/workdir/code/lid/data/xf/data/Swahili/train9_cv_all.label  # 45366
+      # val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-TW/dev.tsv  # 4619
+      val_manifest: /home/cc/workdir/code/lid/data/xf/data/Swahili/dev100.label
+      test_manifest: /home/cc/workdir/code/lid/data/xf/data/Swahili/dev100.label
+      lang: Swahili
+      id: 1
+      vocab: /home/cc/workdir/code/lid/data/xf/data/Swahili-vocab.txt
+    -
+      # train_manifest: /home/cc/workdir/code/lid/data/xf/data/Vietnamese/dev1.label
+      train_manifest: /home/cc/workdir/code/lid/data/xf/data/Vietnamese/train9_cv_all.label  # 11065
+      val_manifest: /home/cc/workdir/code/lid/data/xf/data/Vietnamese/dev100.label
+      test_manifest: /home/cc/workdir/code/lid/data/xf/data/Vietnamese/dev100.label
+      lang: Vietnamese
+      id: 2
+      vocab: /home/cc/workdir/code/lid/data/xf/data/Vietnamese-vocab.txt
+
+  sampler_common:
+    train_batch_size: 12
+    val_batch_size: 4
+    test_batch_size: 1
+  max_duration: 16.7
+
+trainer:
+  total_epoch: 40
+  gpu_id: 0
+  local_rank: 0
+  world_size: 1
+  ddp: false
+  backend: 'nccl'
+  init_method: env://  # 目前只支持env初始化
+  accumulate_grad: 4
+  master_addr: localhost
+  master_port: 11488
+  use_amp: true
+  use_swa: false
+  eval_interval: 1
+  train_data_factor: 1.0
+  log_interval: 10
+  checkpoint_path: null  # trainer 的checkpoint
+  resume_train_states: True
+
+logger:
+  wandb:
+    project: xf_asr
+    entity: kouyt5
+    name: *model_name
+    wandb_id: null
+
+stage: train  # test, train
