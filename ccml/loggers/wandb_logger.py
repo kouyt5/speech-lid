@@ -17,6 +17,7 @@ class WandbLogger(BaseLogger):
         config = None
     ):
         if wandb_id is not None:
+            logging.info(f"wandb init....")
             wandb.init(
                 project=project,
                 entity=entity,
@@ -29,6 +30,7 @@ class WandbLogger(BaseLogger):
             )
             logging.info(f"wandb 初始化完成")
         else:
+            logging.info(f"wandb init....")
             wandb.init(
                 project=project, entity=entity, name=name, save_code=True, group=group,config=config
             )  # 新建一个wandb

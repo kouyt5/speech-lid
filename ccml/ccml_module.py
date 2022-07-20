@@ -2,8 +2,6 @@ from abc import abstractmethod
 from collections import OrderedDict
 from typing import Any, List, Tuple
 import torch
-from torch.cuda import device
-from torch.functional import Tensor
 import torch.nn as nn
 from torch.utils.data.dataset import Dataset
 
@@ -20,6 +18,7 @@ class CCMLModule:
         self._val_dataset = None
         self._test_dataset = None
         self.dataloader_param = {}
+        self.save_hyper_parameters(kwargs)
 
     def get_model(self) -> nn.Module:
         """获取到nn.Module模型

@@ -5,8 +5,6 @@ from tqdm import tqdm
 import torch
 import logging
 
-from ccml.loggers.wandb_logger import WandbLogger
-
 
 class Logger:
     def __init__(self, rank: int = -1, interval:int = 1) -> None:

@@ -3,11 +3,10 @@ import logging
 import os
 from typing import Any, List, Optional, Tuple
 import torch
-from torch.functional import Tensor
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Dataset
 from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import Sampler
 from tqdm import tqdm
 import torch.distributed as dist
 from ccml.loggers.base_logger import BaseLogger
@@ -89,6 +88,10 @@ class Trainer:
         self.test_dataloader = None
         self.train_sampler = None
         self.val_sampler = None
+        self.test_sampler = None
+        self.train_batch_sampler = None
+        self.val_batch_sampler = None
+        self.test_batch_sampler = None
         self.ccml_module = None
         self.training = False  # 是否处于训练状态
         self.tbar = None  # 日志tqdm bar
@@ -240,6 +243,12 @@ class Trainer:
         pin_memory: bool = True,
         num_workers: int = 0,
         prefetch_factor: int = 2,
+        train_sampler: Sampler = None,
+        val_sampler: Sampler = None,
+        test_sampler: Sampler = None,
+        train_batch_sampler: Sampler = None,
+        val_batch_sampler: Sampler = None,
+        test_batch_sampler: Sampler = None,
     ):
         """初始化数据加载器，对train_dataloader等做封装
 
@@ -248,9 +257,20 @@ class Trainer:
             val_datasets (Dataset, optional): 验证集. Defaults to None.
             test_datasets (Dataset, optional): 测试集. Defaults to None.
             ddp (bool, optional): 是否分布式. Defaults to False.
+            train_sampler (Sampler, optional): 训练集采样器
+            val_sampler (Sampler, optional): 验证集采样器
+            test_sampler (Sampler, optional): 测试集采样器
         """
+        self.train_sampler = train_sampler
+        self.val_sampler = val_sampler
+        self.test_sampler = test_sampler
+        self.train_batch_sampler = train_batch_sampler
+        self.val_batch_sampler = val_batch_sampler
+        self.test_batch_sampler = test_batch_sampler
         # 如果分布式并且处于训练状态
         if ddp and self.training:
+            if self.train_sampler is not None or train_batch_sampler is not None:
+                logging.warning(f"train sampler is not None, ddp train may not work correctly...")
             self.train_sampler = DistributedSampler(dataset=self.train_dataset)
             self.val_sampler = DistributedSampler(dataset=self.val_dataset)
 
@@ -266,41 +286,71 @@ class Trainer:
                 if hasattr(self.val_dataset, "collate_fn")
                 else None
             )
-            self.train_dataloader = DataLoader(
-                self.train_dataset,
-                batch_size=train_batch_size,
-                sampler=self.train_sampler,
-                num_workers=num_workers,
-                pin_memory=pin_memory,
-                shuffle=(self.train_sampler is None),
-                drop_last=True,
-                collate_fn=train_collate_fn,
-                prefetch_factor=prefetch_factor,
-            )
-            self.val_dataloader = DataLoader(
-                self.val_dataset,
-                batch_size=train_batch_size,
-                sampler=self.val_sampler,
-                num_workers=num_workers,
-                pin_memory=pin_memory,
-                shuffle=False,
-                collate_fn=val_collate_fn,
-                prefetch_factor=prefetch_factor,
-            )
+            if train_batch_sampler is not None:
+                self.train_dataloader = DataLoader(
+                    self.train_dataset,
+                    batch_sampler=train_batch_sampler,
+                    num_workers=num_workers,
+                    pin_memory=pin_memory,
+                    collate_fn=train_collate_fn,
+                    prefetch_factor=prefetch_factor,
+                )
+            else:
+                self.train_dataloader = DataLoader(
+                    self.train_dataset,
+                    batch_size=train_batch_size,
+                    sampler=self.train_sampler,
+                    num_workers=num_workers,
+                    pin_memory=pin_memory,
+                    shuffle=(self.train_sampler is None),
+                    drop_last=True,
+                    collate_fn=train_collate_fn,
+                    prefetch_factor=prefetch_factor,
+                )
+            if val_batch_sampler is not None:
+                self.val_dataloader = DataLoader(
+                    self.val_dataset,
+                    batch_sampler=val_batch_sampler,
+                    num_workers=num_workers,
+                    pin_memory=pin_memory,
+                    collate_fn=train_collate_fn,
+                    prefetch_factor=prefetch_factor,
+                )
+            else:
+                self.val_dataloader = DataLoader(
+                    self.val_dataset,
+                    batch_size=train_batch_size,
+                    sampler=self.val_sampler,
+                    num_workers=num_workers,
+                    pin_memory=pin_memory,
+                    shuffle=False,
+                    collate_fn=val_collate_fn,
+                    prefetch_factor=prefetch_factor,
+                )
         test_collate_fn = (
             self.test_dataset.collate_fn
             if hasattr(self.test_dataset, "collate_fn")
             else None
         )
-        self.test_dataloader = DataLoader(
-            dataset=self.test_dataset,
-            batch_size=val_batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            pin_memory=False,
-            drop_last=False,
-            collate_fn=test_collate_fn,
-        )
+        if test_batch_sampler is not None:
+            self.test_dataloader = DataLoader(
+                dataset=self.test_dataset,
+                batch_sampler=test_batch_sampler,
+                num_workers=num_workers,
+                pin_memory=False,
+                collate_fn=test_collate_fn,
+            )
+        else:
+            self.test_dataloader = DataLoader(
+                dataset=self.test_dataset,
+                batch_size=val_batch_size,
+                sampler=self.test_sampler,
+                shuffle=False,
+                num_workers=num_workers,
+                pin_memory=False,
+                drop_last=False,
+                collate_fn=test_collate_fn,
+            )
 
     def init_ddp(
         self,
@@ -449,7 +499,7 @@ class Trainer:
                         if (
                             self.ddp  # 分布式
                             and i % self.accumulate_grad != 0  # 非梯度累加的最后一次
-                            and i != len(self.train_datadoader) - 1  # # 非一个epoch训练的最后一次
+                            and i != len(self.train_dataloader) - 1  # # 非一个epoch训练的最后一次
                         ):
                             context = self.model.no_sync
                         else:
@@ -474,7 +524,7 @@ class Trainer:
                         # 梯度累积
                         if (
                             i % self.accumulate_grad == self.accumulate_grad - 1
-                            or i == len(self.train_datadoader) - 1
+                            or i == len(self.train_dataloader) - 1
                         ):
                             self.scalar.unscale_(self.optimizer)
                             torch.nn.utils.clip_grad_norm_(
@@ -482,7 +532,7 @@ class Trainer:
                             )
                             self.scalar.step(self.optimizer)
                             self.scalar.update()
-                            self.optimizer.zero_grad()
+                            self.optimizer.zero_grad(set_to_none=True)
                             # 学习率调度
                             if (
                                 self.sche_interval == "step"
@@ -674,7 +724,7 @@ class Trainer:
         model.load_state_dict(state_dicts["model"])
         epoch = state_dicts["epoch"]
         if not resume_train_states:
-            return model, epoch, None, None, None, None
+            return model, 0, optimizer, scalar, lr_scheduler, logger
         optimizer.load_state_dict(state_dicts["optimizer"])
         if scalar is not None:
             scalar.load_state_dict(state_dicts["scalar"])
