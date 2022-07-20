@@ -16,6 +16,8 @@ model:
   double_swish: false
   mask_prob: 0
 
+supervised: false  # 走监督训练module
+
 module:
   optimizer_name: adam
   optimizer_param:
@@ -35,8 +37,8 @@ module:
   freeze_tranformer_epoch: 1
   freeze_encoder_epoch: 100
   froze_wav2vec_model_epoch: -1
-  use_wav2vec: true
-  conformer_linear: false
+  use_wav2vec: false
+  conformer_linear: true
 
 data:
   source: xf_asr
