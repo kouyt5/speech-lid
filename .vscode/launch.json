@@ -12,10 +12,13 @@
             "console": "integratedTerminal",
             "args": [
                 // "--use_lm", 
-                "--resume_from", "exp/lr1e4_dr1_wd1e6_bs4_ct2_25_fix_de10_last_lstm_swa/last.pt",
-                 "--stage", "test",
+                "--resume_from",
+                "exp/lr1e4_dr1_wd1e6_bs4_ct2_25_fix_de10_last_lstm_swa/last.pt",
+                "--stage",
+                "test",
                 //  "--vocab", "/home/cc/workdir/code/wav2vec-exp/data/vocab_A.txt",
-                "--lm_path", "/home/cc/workdir/code/wav2vec-exp/ckpts/3-gram.pruned.3e-7.arpa"
+                "--lm_path",
+                "/home/cc/workdir/code/wav2vec-exp/ckpts/3-gram.pruned.3e-7.arpa"
             ]
         },
         {
@@ -122,16 +125,51 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "args": [
-                "--stage",
-                "train",
-                "--exp_name",
-                "test",
                 "--pt_path",
-                // "/home/cc/workdir/code/wav2vec-exp/ckpts/xlsr_53_56k.pt",
                 "/home/cc/workdir/code/wav2vec-exp/ckpts/wav2vec_small.pt",
                 "--linear_dim",
-                "768"
+                "768",
+                "--lr",
+                "5e-5",
+                "--num_layer",
+                "1",
+                "--use_glu"
             ]
+        },
+        {
+            "name": "Python: rml",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": [
+                "--use_rnn",
+                "--n_block",
+                "6",
+                "--kernel",
+                "9",
+                "--increasefilter_gap",
+                "5",
+                "--use_snr_info",
+                "--mix_up"
+            ]
+        },
+        {
+            "name": "xf_asr",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--config-name","xf_asr_zero",
+                "trainer.accumulate_grad=4",
+                "data.sampler_common.train_batch_size=4",
+                "trainer.total_epoch=10",
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
         },
         {
             "name": "Python: 当前文件",
@@ -141,7 +179,8 @@
             "console": "integratedTerminal",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
-            }
+            },
+            "justMyCode": false
         }
     ]
 }
