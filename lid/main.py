@@ -1,5 +1,7 @@
 from collections import defaultdict
+import logging
 import sys, os
+
 sys.path.append(os.path.join(".."))
 
 from ccml.callbacks.ckpt_callback import CkptCallback
@@ -7,6 +9,7 @@ from ccml.callbacks.lr_callback import LrCallback
 from ccml import seed_everything
 from ccml.trainer import Trainer
 from lid.LidModule_ASR import LidModule
+from lid.LidModule_ASR_Supervised import LidSuperviseModule
 from lid.raw_datasets import MergedDataset, MutiBatchSampler
 from lid.tokenizer import CTCTokenizer
 import hydra
@@ -29,6 +32,7 @@ def main(cfg: DictConfig) -> None:
     # 数据加载参数
     data_conf = cfg["data"]
     wandb_conf = cfg["logger"]["wandb"]
+    supervised = cfg["supervised"]
 
     seed_everything(0)  # 随机数种子
 
@@ -53,10 +57,19 @@ def main(cfg: DictConfig) -> None:
         lang2index_dict[item["lang"]] = item["id"]
         lang2vocablen_dict[item["lang"]] = len(lang2tokenizer_dict[item["lang"]].export_vocab())
 
-    model_agent = LidModule(**module_conf, **model_conf,
-                            lang2vocab=lang2vocablen_dict,
-                            lang2index_dict=lang2index_dict,
-                            tokenizer_dict=lang2tokenizer_dict)  # 模型训练封装
+    model_agent = None
+    if supervised:
+        logging.info("使用监督损失模型")
+        model_agent = LidSuperviseModule(**module_conf, **model_conf,
+                                lang2vocab=lang2vocablen_dict,
+                                lang2index_dict=lang2index_dict,
+                                tokenizer_dict=lang2tokenizer_dict)
+    else:
+        logging.info("使用无监督预训练模型")
+        model_agent = LidModule(**module_conf, **model_conf,
+                                lang2vocab=lang2vocablen_dict,
+                                lang2index_dict=lang2index_dict,
+                                tokenizer_dict=lang2tokenizer_dict)  # 模型训练封装
     
     train_dataset = MergedDataset(
         train=True,
