@@ -23,6 +23,7 @@ model:
   f_mask: 27
   mask_times: 2  # mask次数
   dim_head: 64  # att head 维度
+  last_dim_head: 32
   heads: 4  # att head数
   ff_mult: 4
   conv_expansion_factor: 2
@@ -31,6 +32,7 @@ model:
   ff_dropout: 0.0
   conv_dropout: 0.0
   double_swish: false
+  sub_sampling: 2  # 2, 4倍下采样
 
 supervised: true  # 走监督训练module
 
@@ -47,7 +49,7 @@ module:
     factor: 0.1
     patience: 5
     cooldown: 3
-    min_lr: 0.0005
+    min_lr: 0.0001
   interval: 50
   freeze_tranformer_epoch: -1
   freeze_encoder_epoch: -1
@@ -57,8 +59,8 @@ data:
   source: xf_asr
   dataloader_params:
     pin_memory: true
-    num_workers: 6
-    prefetch_factor: 10
+    num_workers: 8
+    prefetch_factor: 20
     train_batch_sampler: null
     val_batch_sampler: null
     test_batch_sampler: null

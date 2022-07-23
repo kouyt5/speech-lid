@@ -305,23 +305,48 @@ class ConformerLinear(torch.nn.Module):
         double_swish: bool = False,
     ) -> None:
         super().__init__()
-        self.block = ConformerBlock(
-            dim=linear_dim,
-            dim_head=32,  # 64
-            heads=8,
-            ff_mult=4,
-            conv_expansion_factor=2,
-            conv_kernel_size=31,
-            attn_dropout=dropout,
-            ff_dropout=dropout,
-            conv_dropout=dropout,
-            double_swish=double_swish,
-        )
+        self.num_layers = num_layers
+        logging.info(f"Conformer nums layers: {num_layers}")
+        if num_layers == 1:
+            self.block = ConformerBlock(
+                dim=linear_dim,
+                dim_head=32,  # 64
+                heads=8,
+                ff_mult=4,
+                conv_expansion_factor=2,
+                conv_kernel_size=31,
+                attn_dropout=0,
+                ff_dropout=0,
+                conv_dropout=0,  # dropout
+                double_swish=double_swish,
+            )
+        else:
+            self.block = torch.nn.ModuleList()
+            for i in range(num_layers):
+                self.block.append(
+                    ConformerBlock(
+                        dim=linear_dim,
+                        dim_head=32,  # 64
+                        heads=8,
+                        ff_mult=4,
+                        conv_expansion_factor=2,
+                        conv_kernel_size=31,
+                        attn_dropout=0,
+                        ff_dropout=0,
+                        conv_dropout=0,  # dropout
+                        double_swish=double_swish,
+                    )
+                )
+        
         self.dr = torch.nn.Dropout(dropout)
         self.linear = torch.nn.Linear(linear_dim, vocab_size + 1)
 
     def forward(self, x):
-        x = self.block(x)
+        if self.num_layers == 1:
+            x = self.block(x)
+        else:
+            for block in self.block:
+                x = block(x)
         x = self.dr(x)
         x = self.linear(x)
         return x

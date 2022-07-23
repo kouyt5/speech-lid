@@ -37,6 +37,7 @@ class LidSuperviseModule(CCMLModule):
         f_mask=27,
         mask_times: int = 2,  # mask次数
         dim_head=64,  # att head 维度
+        last_dim_head:int=32,  # 最后层的head维度
         heads=4,  # att head数
         ff_mult=4,
         conv_expansion_factor=2,
@@ -45,6 +46,7 @@ class LidSuperviseModule(CCMLModule):
         ff_dropout=0.0,
         conv_dropout=0.0,
         double_swish=False,
+        sub_sampling:int=2,
         *args,
         **kwargs,
     ):
@@ -64,12 +66,14 @@ class LidSuperviseModule(CCMLModule):
             n_mels = n_mels,
             encoder_dim = encoder_dim,
             dim_head=dim_head,
+            last_dim_head=last_dim_head,
             heads=heads,
             ff_mult=ff_mult,
             conv_expansion_factor=conv_expansion_factor,
             conv_kernel_size=conv_kernel_size,
             double_swish=double_swish,
             lang2index=lang2index_dict,  # 语种判别模块
+            sub_sampling=sub_sampling,
         )
         self.optimizer_name = optimizer_name
         self.optimizer_param = optimizer_param
@@ -105,6 +109,7 @@ class LidSuperviseModule(CCMLModule):
             f_mask=f_mask,
             mask_times = mask_times,
             dim_head=dim_head,
+            last_dim_head=last_dim_head,
             heads=heads,
             ff_mult=ff_mult,
             conv_expansion_factor=conv_expansion_factor,
@@ -115,7 +120,8 @@ class LidSuperviseModule(CCMLModule):
             double_swish=double_swish,
             
             lang2index=lang2index_dict,  # 语种判别模块
-            hidden_dim=hidden_dim
+            hidden_dim=hidden_dim,
+            sub_sampling=sub_sampling,
         )
         self.count = 1
         self.avg_loss = 0
@@ -341,4 +347,4 @@ class LidSuperviseModule(CCMLModule):
         logging.info(
             f"val_wer={total_wer}, val_avg_loss={total_val_loss / len(outputs)}"
         )
-        self.trainer.logger.remove_key(["loss", "wer"])
+        self.trainer.logger.remove_key(["loss", "wer", "_runtime", "_timestamp"])

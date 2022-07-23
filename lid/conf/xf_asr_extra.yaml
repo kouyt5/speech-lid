@@ -22,7 +22,7 @@ module:
   optimizer_name: adam
   optimizer_param:
     # momentum: 0.9
-    weight_decay: 0.00001  # 太大了？
+    weight_decay: 0.000001  # 太大了？
     # nesterov: false
     lr: 0.0001
   scheduler: tristage  # tristage

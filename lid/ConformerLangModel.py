@@ -39,6 +39,7 @@ class ConformerMutiLangModel(torch.nn.Module):
         f_mask=27,
         mask_times: int = 2,  # mask次数
         dim_head=64,  # att head 维度
+        last_dim_head:int = 32,  # 最后一层的head维度
         heads=4,  # att head数
         ff_mult=4,
         conv_expansion_factor=2,
@@ -47,6 +48,7 @@ class ConformerMutiLangModel(torch.nn.Module):
         ff_dropout=0.0,
         conv_dropout=0.0,
         double_swish=False,
+        sub_sampling:int = 2,
         
     ):
         super().__init__()
@@ -68,6 +70,7 @@ class ConformerMutiLangModel(torch.nn.Module):
             f_mask=f_mask,
             mask_times = mask_times,
             dim_head=dim_head,
+            last_dim_head=last_dim_head,
             heads=heads,
             ff_mult=ff_mult,
             conv_expansion_factor=conv_expansion_factor,
@@ -76,6 +79,8 @@ class ConformerMutiLangModel(torch.nn.Module):
             ff_dropout=ff_dropout,
             conv_dropout=conv_dropout,
             double_swish=double_swish,
+            sub_sampling=sub_sampling,
+            
         )
         self.lang_discriminator = LangDiscriminator(
             lang2index=lang2index, lang2vocab=lang2vocab, hidden_dim=hidden_dim
@@ -208,6 +213,7 @@ class ConformerMutiModel(torch.nn.Module):
         f_mask=27,
         mask_times: int = 2,
         dim_head=64,
+        last_dim_head: int = 32,
         heads=4,
         ff_mult=4,
         conv_expansion_factor=2,
@@ -216,6 +222,7 @@ class ConformerMutiModel(torch.nn.Module):
         ff_dropout=0.0,
         conv_dropout=0.0,
         double_swish=False,
+        sub_sampling:int = 2,
     ) -> None:
         super().__init__()
         self.lang2vocab = lang2vocab
@@ -239,6 +246,7 @@ class ConformerMutiModel(torch.nn.Module):
             ff_dropout=ff_dropout,
             conv_dropout=conv_dropout,
             double_swish=double_swish,
+            sub_sampling=sub_sampling,
             )  # (N, T, C), egs (4, 102, 80)
         logging.info("使用Conformer模型")
         if conformer_linear:
@@ -253,6 +261,7 @@ class ConformerMutiModel(torch.nn.Module):
                             num_layers=num_layers,
                             vocab_size=lang2vocab[key],
                             double_swish=double_swish,
+                            dim_head=last_dim_head
                         ),
                     ]
                     for key in lang2vocab.keys()
@@ -346,18 +355,19 @@ class ConformerLinear(torch.nn.Module):
         num_layers: int = 1,
         vocab_size: int = 0,
         double_swish: bool = False,
+        dim_head: int = 32,
     ) -> None:
         super().__init__()
         self.block = ConformerBlock(
             dim=linear_dim,
-            dim_head=32,  # 64
+            dim_head=dim_head,  # 64
             heads=8,
             ff_mult=4,
             conv_expansion_factor=2,
             conv_kernel_size=31,
-            attn_dropout=dropout,
-            ff_dropout=dropout,
-            conv_dropout=dropout,
+            attn_dropout=0,
+            ff_dropout=0,
+            conv_dropout=0,
             double_swish=double_swish,
         )
         self.dr = torch.nn.Dropout(dropout)

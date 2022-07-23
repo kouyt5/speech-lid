@@ -1,3 +1,4 @@
+import logging
 import math
 from typing import Tuple, Union
 import torch
@@ -316,11 +317,34 @@ class FBank(nn.Module):
             for i in range(self.mask_time):
                 # time mask
                 x = torchaudio.functional.mask_along_axis(
-                    x, int(x.size(2) * self.t_mask_prob), 0.0, 2, 1.0
+                    x, int(x.size(2) * self.t_mask_prob), 0.0, 2  # , 1.0
                 )
                 x = self.f_mask(x)
         # norm
         return x.permute(0, 2, 1)  # (B, T, C)
+
+
+class Conv1dSubSampling2(nn.Module):
+    def __init__(self, idim: int, odim: int) -> None:
+        super().__init__()
+        self.sub_sampling = nn.Sequential(
+            nn.Conv1d(idim, idim, kernel_size=3, stride=2, padding=1), Swish()
+        )
+        self.linear = nn.Linear(idim, odim)
+
+    def forward(self, x):
+        """
+        Args:
+            x (_type_):(N, T, idim)
+
+        Return:
+            x Tensor: (N, T, odim)
+        """
+        x = x.transpose(1, 2)  # -> (N, idim, T)
+        x = self.sub_sampling(x)
+        x = x.transpose(1, 2)  # -> (N, T, idim)
+        x = self.linear(x)
+        return x
 
 
 class Conv2dSubsampling(nn.Module):
@@ -390,6 +414,7 @@ class ConformerModel(nn.Module):
         ff_dropout=0.0,
         conv_dropout=0.0,
         double_swish=False,
+        sub_sampling: int = 2,
     ) -> None:
         super().__init__()
         self.fbank = FBank(
@@ -401,12 +426,12 @@ class ConformerModel(nn.Module):
             f_mask=f_mask,
             mask_times=mask_times,
         )
-        # self.sub_sampling = Conv2dSubsampling(n_mels, encoder_dim)
-        self.sub_sampling = nn.Sequential(
-            nn.Conv1d(n_mels, n_mels, kernel_size=3, stride=2, padding=1),
-            Swish()
-        )
-        self.pos = RelPositionalEncoding(n_mels, dropout_rate=0.0)
+        logging.info(f"下采样倍数: {sub_sampling}")
+        if sub_sampling == 4:
+            self.sub_sampling = Conv2dSubsampling(n_mels, encoder_dim)
+        else:
+            self.sub_sampling = Conv1dSubSampling2(n_mels, encoder_dim)
+        self.pos = RelPositionalEncoding(encoder_dim, dropout_rate=0.0)
         self.linear = nn.Linear(n_mels, encoder_dim)
         self.encoders = nn.ModuleList()
         for i in range(n_blocks):
@@ -438,17 +463,15 @@ class ConformerModel(nn.Module):
             ).squeeze(0)
             feats.append(tmp)
         x = pad_sequence(feats, batch_first=True)
-        # TODO kaldi 封装，和wenet保持一致
-        # x = torchaudio.compliance.kaldi.fbank(x)
-        # x = self.fbank(x, pad_mask)  # (N, T) -> (N, T', C)
-        x = self.sub_sampling(x.transpose(1, 2)).transpose(1, 2)  # (N, T, C) -> (N, T', C)
-        # x = self.sub_sampling(x)
+        # x = self.sub_sampling(x.transpose(1, 2)).transpose(1, 2)  # (N, T, C) -> (N, T', C)
+        x = self.sub_sampling(x)
         x, _ = self.pos(x)
-        x = self.linear(x)
+        # x = self.linear(x)
         for layer in self.encoders:
             x = layer(x)
         return x  # (N, T, C)
-    
+
+
 class PositionalEncoding(torch.nn.Module):
     """Positional encoding.
 
@@ -459,11 +482,14 @@ class PositionalEncoding(torch.nn.Module):
     PE(pos, 2i)   = sin(pos/(10000^(2i/dmodel)))
     PE(pos, 2i+1) = cos(pos/(10000^(2i/dmodel)))
     """
-    def __init__(self,
-                 d_model: int,
-                 dropout_rate: float,
-                 max_len: int = 5000,
-                 reverse: bool = False):
+
+    def __init__(
+        self,
+        d_model: int,
+        dropout_rate: float,
+        max_len: int = 5000,
+        reverse: bool = False,
+    ):
         """Construct an PositionalEncoding object."""
         super().__init__()
         self.d_model = d_model
@@ -472,19 +498,18 @@ class PositionalEncoding(torch.nn.Module):
         self.max_len = max_len
 
         self.pe = torch.zeros(self.max_len, self.d_model)
-        position = torch.arange(0, self.max_len,
-                                dtype=torch.float32).unsqueeze(1)
+        position = torch.arange(0, self.max_len, dtype=torch.float32).unsqueeze(1)
         div_term = torch.exp(
-            torch.arange(0, self.d_model, 2, dtype=torch.float32) *
-            -(math.log(10000.0) / self.d_model))
+            torch.arange(0, self.d_model, 2, dtype=torch.float32)
+            * -(math.log(10000.0) / self.d_model)
+        )
         self.pe[:, 0::2] = torch.sin(position * div_term)
         self.pe[:, 1::2] = torch.cos(position * div_term)
         self.pe = self.pe.unsqueeze(0)
 
-    def forward(self,
-                x: torch.Tensor,
-                offset: Union[int, torch.Tensor] = 0) \
-            -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, offset: Union[int, torch.Tensor] = 0
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Add positional encoding.
 
         Args:
@@ -501,9 +526,10 @@ class PositionalEncoding(torch.nn.Module):
         x = x * self.xscale + pos_emb
         return self.dropout(x), self.dropout(pos_emb)
 
-    def position_encoding(self, offset: Union[int, torch.Tensor], size: int,
-                          apply_dropout: bool = True) -> torch.Tensor:
-        """ For getting encoding in a streaming fashion
+    def position_encoding(
+        self, offset: Union[int, torch.Tensor], size: int, apply_dropout: bool = True
+    ) -> torch.Tensor:
+        """For getting encoding in a streaming fashion
 
         Attention!!!!!
         we apply dropout only once at the whole utterance level in a none
@@ -522,14 +548,15 @@ class PositionalEncoding(torch.nn.Module):
         #   https://github.com/pytorch/pytorch/issues/69434
         if isinstance(offset, int):
             assert offset + size < self.max_len
-            pos_emb = self.pe[:, offset:offset + size]
+            pos_emb = self.pe[:, offset : offset + size]
         elif isinstance(offset, torch.Tensor) and offset.dim() == 0:  # scalar
             assert offset + size < self.max_len
-            pos_emb = self.pe[:, offset:offset + size]
+            pos_emb = self.pe[:, offset : offset + size]
         else:  # for batched streaming decoding on GPU
             assert torch.max(offset) + size < self.max_len
-            index = offset.unsqueeze(1) + \
-                torch.arange(0, size).to(offset.device)  # B X T
+            index = offset.unsqueeze(1) + torch.arange(0, size).to(
+                offset.device
+            )  # B X T
             flag = index > 0
             # remove negative offset
             index = index * flag
@@ -538,6 +565,8 @@ class PositionalEncoding(torch.nn.Module):
         if apply_dropout:
             pos_emb = self.dropout(pos_emb)
         return pos_emb
+
+
 class RelPositionalEncoding(PositionalEncoding):
     """Relative positional encoding module.
     See : Appendix B in https://arxiv.org/abs/1901.02860
@@ -546,14 +575,14 @@ class RelPositionalEncoding(PositionalEncoding):
         dropout_rate (float): Dropout rate.
         max_len (int): Maximum input length.
     """
+
     def __init__(self, d_model: int, dropout_rate: float, max_len: int = 5000):
         """Initialize class."""
         super().__init__(d_model, dropout_rate, max_len, reverse=True)
 
-    def forward(self,
-                x: torch.Tensor,
-                offset: Union[int, torch.Tensor] = 0) \
-            -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, offset: Union[int, torch.Tensor] = 0
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Compute positional encoding.
         Args:
             x (torch.Tensor): Input tensor (batch, time, `*`).
@@ -565,8 +594,8 @@ class RelPositionalEncoding(PositionalEncoding):
         x = x * self.xscale
         pos_emb = self.position_encoding(offset, x.size(1), False)
         return self.dropout(x), self.dropout(pos_emb)
-    
-    
+
+
 if __name__ == "__main__":
     x = torch.randn((4, 16000))
     x = x.to("cuda:0")
