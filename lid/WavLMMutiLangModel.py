@@ -2,7 +2,9 @@ from collections import OrderedDict
 import logging
 import math, sys, os
 
-# sys.path.append(os.path.join(".."))
+sys.path.append(os.path.join(".."))
+sys.path.append(os.path.join("."))
+
 from typing import Dict, List
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -36,7 +38,10 @@ class WavLMMutiLangModel(torch.nn.Module):
         use_pre_train: bool = True,
         mask_channel_prob: float = 0,
         mask_prob: float = 0.,
-        conformer_pure: bool = False
+        conformer_pure: bool = False,
+        use_mask: bool = False,
+        dim_head: int = 32,
+        num_head: int = 8,
     ):
         super().__init__()
         self.data_processor = DataProcessor()
@@ -54,6 +59,9 @@ class WavLMMutiLangModel(torch.nn.Module):
             mask_channel_prob=mask_channel_prob,
             mask_prob=mask_prob,
             conformer_pure=conformer_pure,
+            use_mask=use_mask,
+            dim_head=dim_head,
+            num_head=num_head,
         )
         self.lang_discriminator = LangDiscriminator(
             lang2index=lang2index, lang2vocab=lang2vocab, hidden_dim=hidden_dim
@@ -102,6 +110,17 @@ class WavLMMutiLangModel(torch.nn.Module):
         for model in model_freezes:
             for params in model.parameters():
                 params.requires_grad = True
+    
+    def keep_last_lang_model_train(self, lang):
+        model_freezes = []
+        for item_lang in self.model.last_projects.keys():
+            if lang == item_lang:
+                continue;
+            model_freezes.append(self.model.last_projects[item_lang])
+            logging.info(f"freeze lang model: {item_lang}")
+        for model in model_freezes:
+            for params in model.parameters():
+                params.requires_grad = False
 
     def reset_param(self):
         logging.info("reset parameters...")
@@ -184,6 +203,9 @@ class WavLMMutiModel(torch.nn.Module):
         mask_channel_prob: float = 0.0,
         mask_prob: float = 0.0,
         conformer_pure: bool = False,
+        use_mask: bool = False,
+        dim_head: int = 32,
+        num_head: int = 8,
     ) -> None:
         super().__init__()
         self.lang2vocab = lang2vocab
@@ -199,29 +221,31 @@ class WavLMMutiModel(torch.nn.Module):
             self.featurizer = WavLMModel(pt_path, use_pre_train, mask_channel_prob, mask_prob)
             logging.info("使用WavLM预训练模型")
         if conformer_linear:
-            logging.info("使用Conformer")
             self.last_projects = torch.nn.ModuleDict(
-                [
                     [
-                        key,
-                        ConformerLinear(
-                            dropout=dropout,
-                            linear_dim=linear_dim,
-                            num_layers=num_layers,
-                            vocab_size=lang2vocab[key],
-                            double_swish=double_swish,
-                        ),
+                        [
+                            key,
+                            ConformerLinear(
+                                dropout=dropout,
+                                linear_dim=linear_dim,
+                                num_layers=num_layers,
+                                vocab_size=lang2vocab[key],
+                                double_swish=double_swish,
+                                use_mask=use_mask,
+                                dim_head=dim_head,
+                                num_head=num_head,
+                            ),
+                        ]
+                        for key in lang2vocab.keys()
                     ]
-                    for key in lang2vocab.keys()
-                ]
-            )
+                )
         else:
             logging.info("使用LSTM")
             self.last_projects = torch.nn.ModuleDict(
                 [
                     [
                         key,
-                        LSTMLinear(
+                        ConformerLSTMLinear(
                             dropout=dropout,
                             linear_dim=linear_dim,
                             num_layers=num_layers,
@@ -251,48 +275,13 @@ class WavLMMutiModel(torch.nn.Module):
         
         max_len = max(batch, key=lambda x: x.shape[0]).shape[0]
         percents = [item.shape[0] / max_len for item in batch]
-        feature_len = [percent * (feature.shape[1]) for percent in percents]
-        length = torch.floor(torch.Tensor(feature_len)).long()
-        if not self.conformer_linear:
-            feature = torch.nn.utils.rnn.pack_padded_sequence(
-                feature, enforce_sorted=False, lengths=length, batch_first=True
-            )
         res = {}
         if lang is not None:
-            res[lang] = self.last_projects[lang](feature)
+                res[lang] = self.last_projects[lang](feature, percents)
         else:
             for key in self.lang2vocab.keys():
-                res[key] = self.last_projects[key](feature)
+                res[key] = self.last_projects[key](feature, percents)
         return res
-
-
-class LSTMLinear(torch.nn.Module):
-    def __init__(
-        self,
-        dropout: float = 0.0,
-        linear_dim: int = 768,
-        num_layers: int = 1,
-        vocab_size: int = 0,
-    ):
-        super().__init__()
-
-        self.rnn = torch.nn.LSTM(
-            input_size=linear_dim,
-            batch_first=True,  # input = (batch, seq, feature)
-            hidden_size=linear_dim // 2,
-            num_layers=num_layers,
-            dropout=dropout,
-            bidirectional=True,
-        )
-        self.dr = torch.nn.Dropout(dropout)
-        self.linear = torch.nn.Linear(linear_dim, vocab_size + 1)
-
-    def forward(self, feature):
-        x, h = self.rnn(feature)
-        x, _ = torch.nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
-        x = self.dr(x)
-        x = self.linear(x)
-        return x
 
 
 class ConformerLinear(torch.nn.Module):
@@ -303,15 +292,19 @@ class ConformerLinear(torch.nn.Module):
         num_layers: int = 1,
         vocab_size: int = 0,
         double_swish: bool = False,
+        use_mask: bool = False,
+        dim_head: int = 32,
+        num_head: int = 8,
     ) -> None:
         super().__init__()
         self.num_layers = num_layers
+        self.use_mask = use_mask
         logging.info(f"Conformer nums layers: {num_layers}")
         if num_layers == 1:
             self.block = ConformerBlock(
                 dim=linear_dim,
-                dim_head=32,  # 64
-                heads=8,
+                dim_head=dim_head,  # 32
+                heads=num_head,  # 8
                 ff_mult=4,
                 conv_expansion_factor=2,
                 conv_kernel_size=31,
@@ -326,8 +319,8 @@ class ConformerLinear(torch.nn.Module):
                 self.block.append(
                     ConformerBlock(
                         dim=linear_dim,
-                        dim_head=32,  # 64
-                        heads=8,
+                        dim_head=dim_head,  # 32
+                        heads=num_head,  # 8
                         ff_mult=4,
                         conv_expansion_factor=2,
                         conv_kernel_size=31,
@@ -341,12 +334,51 @@ class ConformerLinear(torch.nn.Module):
         self.dr = torch.nn.Dropout(dropout)
         self.linear = torch.nn.Linear(linear_dim, vocab_size + 1)
 
-    def forward(self, x):
+    def forward(self, x, percents):
+        if self.use_mask:
+            feature_len = [percent * (x.shape[1]) for percent in percents]
+            mask = torch.ones_like(x)
+            for length in feature_len:
+                mask[:, :length, :] = 0
+            x = x.masked_fill(mask.bool(), 0)
         if self.num_layers == 1:
             x = self.block(x)
         else:
             for block in self.block:
                 x = block(x)
+        x = self.dr(x)
+        x = self.linear(x)
+        return x
+
+class ConformerLSTMLinear(torch.nn.Module):
+    def __init__(
+        self,
+        dropout: float = 0.0,
+        linear_dim: int = 768,
+        num_layers: int = 1,
+        vocab_size: int = 0,
+        double_swish: bool = False,
+    ) -> None:
+        super().__init__()
+        self.rnn = torch.nn.LSTM(
+            input_size=linear_dim,
+            batch_first=True,  # input = (batch, seq, feature)
+            hidden_size=linear_dim // 2,
+            num_layers=num_layers,
+            dropout=dropout,
+            bidirectional=True,
+        )
+        self.dr = torch.nn.Dropout(dropout)
+        self.linear = torch.nn.Linear(linear_dim, vocab_size + 1)
+
+    def forward(self, x, percents):
+        feature_len = [percent * (x.shape[1]) for percent in percents]
+        length = torch.floor(torch.Tensor(feature_len)).long()
+        x = torch.nn.utils.rnn.pack_padded_sequence(
+            x, enforce_sorted=False, lengths=length, batch_first=True
+        )
+        x, h = self.rnn(x)
+        x, _ = torch.nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
         x = self.dr(x)
         x = self.linear(x)
         return x
@@ -405,6 +437,7 @@ if __name__ == "__main__":
         pt_path=pt_path,
         lang2vocab={"cn": 4221, "en": 100},
         lang2index={"cn": 0, "en": 1},
+        conformer_linear=False,
     )
     model.eval()
     # model = DataProcessor()

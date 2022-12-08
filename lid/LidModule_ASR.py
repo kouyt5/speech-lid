@@ -1,13 +1,16 @@
 import logging
 from typing import Any, Dict, List, Tuple
+import time
 
 import numpy as np
 import torch
 from ccml.ccml_module import CCMLModule
 from ccml.optim.novograd import Novograd
 from ccml.optim.tri_state import TriStageLRSchedule
+from ccml.utils.profile import register_cost_statistic
 from lid.Wav2vecMutiLangModel import Wav2vecMutiLangModel
 from lid.WavLMMutiLangModel import WavLMMutiLangModel
+from ccml.utils.profile import _time_cost_recoder
 
 
 class LidModule(CCMLModule):
@@ -34,11 +37,16 @@ class LidModule(CCMLModule):
         use_wav2vec: bool = False,
         conformer_linear: bool = False,
         double_swish: bool = False,
-        use_pre_train:bool = True,
-        mask_channel_prob:float=0.,
-        mask_prob:float = 0.,
+        use_pre_train: bool = True,
+        mask_channel_prob: float = 0.0,
+        mask_prob: float = 0.0,
         sr: int = 22050,
         conformer_pure: bool = False,  # 兼容conformer监督模型
+        extrme_mode: bool = False,
+        keep_train_lang: str = None,
+        use_mask: bool = False,
+        dim_head: int = 32,  # Conformer
+        num_head: int = 8,
         *args,
         **kwargs,
     ):
@@ -56,7 +64,11 @@ class LidModule(CCMLModule):
             conformer_linear=conformer_linear,
             double_swish=double_swish,
             mask_channel_prob=mask_channel_prob,
-            mask_prob=mask_prob
+            mask_prob=mask_prob,
+            keep_train_lang=keep_train_lang,
+            use_mask=use_mask,
+            dim_head=dim_head,
+            num_head=num_head,
         )
         self.optimizer_name = optimizer_name
         self.optimizer_param = optimizer_param
@@ -72,9 +84,13 @@ class LidModule(CCMLModule):
         for key in self.lang2index_dict.keys():
             self.index2lang_dict[self.lang2index_dict[key]] = key
         self.tokenizer_dict = tokenizer_dict
+        self.extrme_mode = extrme_mode
+        self.keep_train_lang = keep_train_lang
 
         logging.info(f"采样率: {sr}")
-        logging.info(f"使用double swish: {double_swish}, mask channel prob{mask_channel_prob}")
+        logging.info(
+            f"使用double swish: {double_swish}, mask channel prob{mask_channel_prob}"
+        )
         if use_wav2vec:
             self.model = Wav2vecMutiLangModel(
                 pt_path=pt_path,
@@ -86,6 +102,10 @@ class LidModule(CCMLModule):
                 lang2vocab=lang2vocab,  # {"cn": 4442}) -> None
                 lang2index=lang2index_dict,
                 hidden_dim=hidden_dim,
+                conformer_linear=conformer_linear,
+                use_mask=use_mask,
+                dim_head=dim_head,
+                num_head=num_head,
             )
         else:
             self.model = WavLMMutiLangModel(
@@ -103,18 +123,23 @@ class LidModule(CCMLModule):
                 use_pre_train=use_pre_train,
                 mask_channel_prob=mask_channel_prob,
                 mask_prob=mask_prob,
-                conformer_pure=conformer_pure
+                conformer_pure=conformer_pure,
+                use_mask=use_mask,
+                dim_head=dim_head,
+                num_head=num_head,
             )
         self.count = 1
         self.avg_loss = 0
         self.avg_wer = 0
+        self.predict_texts = None
+        self.countdown_20 = 0
 
     def config_optim(
         self, *args, **kwargs
     ) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler, dict]:
         if self.optimizer_name == "sgd":
             optimizer = torch.optim.SGD(self.model.parameters(), **self.optimizer_param)
-        if self.optimizer_name == "adam":
+        elif self.optimizer_name == "adam":
             optimizer = torch.optim.Adam(
                 self.model.parameters(), **self.optimizer_param
             )
@@ -136,14 +161,16 @@ class LidModule(CCMLModule):
                 optimizer=optimizer,
                 phase_ratio=[0.1, 0.4, 0.5],
                 init_lr_scale=0.05,
-                final_lr_scale=0.02,
+                final_lr_scale=0.2,
                 max_update=self.trainer.total_steps,
                 lr=self.optimizer_param["lr"],
             )
         # return optimizer, scheduler, {"monitor": "val_loss", "interval": "epoch"}
         return optimizer, scheduler, {"monitor": None, "interval": "step"}
 
-    def common_loop(self, batch) -> Dict:
+    @register_cost_statistic(need_return=True)
+    def common_loop(self, batch, train_stat: bool = True) -> Dict:
+        pre_time = time.time()
         wavs = batch[0]
         texts = batch[1]
         wav_percents = batch[2]
@@ -159,21 +186,33 @@ class LidModule(CCMLModule):
             (texts.shape[-1] * text_percents).long().cpu(),
         )
         loss = torch.mean(loss)
-        predict_texts = self.tokenizer_dict[lang].ctc_decode(
-            torch.argmax(out, dim=-1),
-            predictions_len=(torch.argmax(out, dim=-1).shape[1] * batch[2]).long(),
-        )
-        label_texts = self.tokenizer_dict[lang].decoder(
-            texts, target_lengths=(texts.shape[1] * text_percents).long()
-        )
-        wer = self.model.model.wer_fn(predict_texts, label_texts).item()
+        _time_cost_recoder.recoder("common_loop.only_loss", time.time() - pre_time)
 
+        # 训练 or 测试
+        if (
+            self.countdown_20 == 0
+            or (self.predict_texts is None or not self.extrme_mode)
+            or not train_stat
+        ):
+            self.countdown_20 = 20
+            self.predict_texts = self.tokenizer_dict[lang].ctc_decode(
+                torch.argmax(out, dim=-1),
+                predictions_len=(torch.argmax(out, dim=-1).shape[1] * batch[2]).long(),
+            )
+            self.label_texts = self.tokenizer_dict[lang].decoder(
+                texts, target_lengths=(texts.shape[1] * text_percents).long()
+            )
+            self.wer = self.model.model.wer_fn(
+                self.predict_texts, self.label_texts
+            ).item()
+
+        self.countdown_20 -= 1
         return {
             "loss": loss,
-            "wer": wer,
+            "wer": self.wer,
             "lang": lang,
-            "predict_texts": predict_texts,
-            "label_texts": label_texts,
+            "predict_texts": self.predict_texts,
+            "label_texts": self.label_texts,
         }
 
     def lid_infer(self, lid_out: torch.Tensor) -> List:
@@ -197,7 +236,7 @@ class LidModule(CCMLModule):
 
     def infer(self, x: torch.Tensor, sample_rate: int = 22050, language: str = None):
         out, (lid_asr, lid_linear) = self.model(
-            [x[0,:]], sample_rate, language
+            [x[0, :]], sample_rate, language
         )  # {"cn": (1, T, V)}, (1 * C)
         predict_texts = {}
         for lang in out.keys():
@@ -206,9 +245,10 @@ class LidModule(CCMLModule):
             )
         return predict_texts, lid_asr, out
 
+    @register_cost_statistic(need_return=True)
     def train_loop(self, batch):
         # out.keys(): "loss" "wer" "lang" "predict_texts" "label_texts" lid_acc
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         out = self.common_loop(batch)
         if self.trainer.current_step % self.interval == self.interval - 1:
             logging.info("wer: " + str(out["wer"]))
@@ -216,7 +256,7 @@ class LidModule(CCMLModule):
             logging.info(f"label_text:   {out['label_texts'][0]}")
 
         # https://zhuanlan.zhihu.com/p/151786842
-        if (not torch.isnan(out["loss"]).item()):
+        if not torch.isnan(out["loss"]).item():
             self.avg_loss = (0.98 * self.avg_loss) + 0.02 * out["loss"].item()
             self.avg_wer = (0.98 * self.avg_wer) + 0.02 * out["wer"]
             self.count += 1
@@ -250,6 +290,8 @@ class LidModule(CCMLModule):
         else:
             self.model.unfreeze_tranformer_encoder()
             logging.info("unfreeze tranformer")
+        if self.keep_train_lang is not None:
+            self.model.keep_last_lang_model_train(self.keep_train_lang)
         # 语种判别固定wav2vec模型
         # if epoch <= self.froze_wav2vec_model_epoch:
         #     self.model.froze_wav2vec_model()
@@ -262,7 +304,7 @@ class LidModule(CCMLModule):
         self.count = 1
         self.avg_loss = 0
         self.avg_wer = 0
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         total_train_loss = 0.0
         total_train_wer = 0.0
         for item in outputs:
@@ -283,13 +325,14 @@ class LidModule(CCMLModule):
 
     def val_loop(self, batch):
         # out.keys(): "wer" "lang" "predict_texts" "label_texts"
-        torch.cuda.empty_cache()
-        out = self.common_loop(batch)
+        # torch.cuda.empty_cache()
+        raw_wavs = batch[0][0].clone().unsqueeze(0)
+        out = self.common_loop(batch, False)
         if self.count % self.interval == self.interval - 1:
             logging.info("wer: " + str(out["wer"]))
             logging.info(f"predict_text: {out['predict_texts'][0]}")
             logging.info(f"label_text:   {out['label_texts'][0]}")
-        if (not torch.isnan(out["loss"]).item()):
+        if not torch.isnan(out["loss"]).item():
             self.avg_loss = (0.98 * self.avg_loss) + 0.02 * out["loss"].item()
             self.avg_wer = (0.98 * self.avg_wer) + 0.02 * out["wer"]
             self.count += 1
@@ -302,17 +345,24 @@ class LidModule(CCMLModule):
                 only_tbar=True,
                 stage="val",
             )
+        outacc = self.infer(raw_wavs, 16000)
+        index = torch.argmax(outacc[1], dim=-1)
+        index = index[0].item()
+        pre_lang = self.index2lang_dict[index]
+        true_lang = self.index2lang_dict[batch[5][0].item()]
         return {
             "val_loss": out["loss"],
             "val_wer": out["wer"],
             "predict_texts": out["predict_texts"],
             "label_texts": out["label_texts"],
+            "lang_corr": (pre_lang is true_lang)
         }
 
     def val_loop_end(self, outputs: List[Any] = None):
         total_val_loss = 0.0
         all_predict_texts = []
         all_label_texts = []
+        lang_corr = 0
         for item in outputs:
             all_predict_texts.extend(item["predict_texts"])
             all_label_texts.extend(item["label_texts"])
@@ -320,11 +370,14 @@ class LidModule(CCMLModule):
                 logging.warning("loss is nan, it will be ignore..")
                 continue
             total_val_loss += item["val_loss"]
-
+            if item["lang_corr"]:
+                lang_corr += 1
         total_wer = self.model.model.wer_fn(all_predict_texts, all_label_texts)
+
         self.trainer.logger.log(
             data={
                 "val_loss": total_val_loss / len(outputs),
+                "val_acc": lang_corr/len(outputs),
                 "val_wer": total_wer,
                 "epoch": self.trainer.current_epoch,
             },
@@ -336,4 +389,5 @@ class LidModule(CCMLModule):
         logging.info(
             f"val_wer={total_wer}, val_avg_loss={total_val_loss / len(outputs)}"
         )
+        logging.info(f"val acc: {lang_corr/len(outputs)}")
         self.trainer.logger.remove_key(["loss", "wer"])

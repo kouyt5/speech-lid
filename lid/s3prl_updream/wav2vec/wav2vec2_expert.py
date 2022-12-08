@@ -209,7 +209,7 @@ def load_wav2vec2_for_finetune(ckpt_path: str, drop_layer: bool = False):
         logging.info("turn on the layer dropout")
     cfg.model["mask_channel_length"] = 64
     cfg.model["mask_channel_prob"] = 0.2
-    cfg.model["mask_prob"] = 0.25
+    cfg.model["mask_prob"] = 0.2
     # cfg.model["quantize_targets"] = False
     model = Wav2Vec2Model.build_model(cfg.model)
     model.load_state_dict(state["model"], strict=True, model_cfg=cfg.model)

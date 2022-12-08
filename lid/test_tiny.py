@@ -8,21 +8,21 @@ import torch
 import torchmetrics
 import torchaudio
 import kenlm
+import wandb
 sys.path.append("..")
-sys.path.append("./code/")
 
+from ccml.loggers.wandb_logger import WandbLogger
 from lid.lm_decoder import BeamSearchDecoderWithLM
 from lid.LidModule_ASR import LidModule
 import logging
 
-KENLM_THRESHOLD = 0.012 * 1
+KENLM_THRESHOLD = 0.012
 
 
 class XFResult:
     def __init__(
         self,
         ckpt_path: str,
-        base_pt_path: str, 
         folder: str,
         result_file: str,
         map_location: str = "cpu",
@@ -40,7 +40,7 @@ class XFResult:
             exit()
         self.folder = folder
         self.model = LidModule.resume_from_checkpoint(
-            ckpt_path, map_location=map_location, pt_path=base_pt_path
+            ckpt_path, map_location=map_location
         )
         self.model.model.eval()
         self.device = torch.device(map_location)
@@ -201,13 +201,13 @@ class XFResult:
 
         dataset = self._get_dataset_xf(manifest_path)
         for data in tqdm(dataset, total=len(dataset)):
-            pre_text, pre_lang, out = self.predict_audio(data["path"], lang=lang)
+            pre_text, pre_lang, out = self.predict_audio(data["path"])
             ground_trues.append(data["sentence"])
             pre_texts.append(pre_text)
             if pre_lang == data["locale"]:
                 corr += 1
             total += 1
-            # probs.append(out[1].squeeze(0).detach().cpu().numpy().tolist()) 
+            probs.append(out[1].squeeze(0).detach().cpu().numpy().tolist())
         wer_fn = torchmetrics.CharErrorRate()
         wer_fn2 = torchmetrics.WordErrorRate()
         # self.write_to_csv(ground_trues, pre_texts, probs, lang=lang)
@@ -239,46 +239,104 @@ class XFResult:
 
 
 if __name__ == "__main__":
-    parse = argparse.ArgumentParser(description="WavLM muti language ASR for 讯飞比赛")
-    parse.add_argument("--alpha", type=float, default=2)
-    parse.add_argument("--beta", type=float, default=1)
-    parse.add_argument("--cutoff_top_n", type=int, default=40)
-    parse.add_argument("--beam_width", type=int, default=1000)
-    parse.add_argument("--base_path", type=str, default="/hdd/1/chenc/lid/speech-lid/lid/data/xf/")
-    parse.add_argument("--test_path", type=str, default="/workspace/xfdata/data/")
-    parse.add_argument("--pt_path", type=str, default="/hdd/1/chenc/lid/speech-lid/lid/outputs/2022-09-11/16-14-limit_Wav2vec_Large_lr_0.0001_dr_0.1_bs_4_conform_False/ckpt/last.pt")
-    parse.add_argument("--base_pt_path", type=str, default="wavlm/ckpts/WavLM-Base-plus.pt")
-    arg = parse.parse_args()
     
-    base_path = arg.base_path
-    # final 0.9166
-    ckpt_path = arg.pt_path
+    # --config-name xf_asr_85 12epoch 迁移encoder
+    # cer: 0.086(nolm0.107) 0.0364(0.035) 0.0146(0.0256) wer: 0.275(nolm0.378) 0.1348(0.161) 0.0317(0.076)
+    # with lm total cer/wer 0.041/0.125
+    # without lm total cer/wer 0.0515/0.1812
+    ckpt_path = "/home/cc/workdir/tmp/code/lid/outputs/2022-08-05/23-28-lr_0.0001_dr_0.1_mask_0.2_cmask_0.2_bs_4_free_12/ckpt/last.pt"
+    # 同上 avg
+    # cer: 0.108 0.035 0.026
+    # ckpt_path = "/home/cc/workdir/tmp/code/lid/outputs/2022-08-05/23-28-lr_0.0001_dr_0.1_mask_0.2_cmask_0.2_bs_4_free_12/ckpt/avg_6.pt"
     
+    # no freeze
+    # without lm cer: 0.107 0.0385 0.027wer: 0.03847 0.191 0.081
+    # with lm cer:0.078 0.034 0.013  wer: 0.2647 0.122 0.0306 total cer:wer 0.0378/0.1189
+    # without lm total cer/wer 0.53/0.192
+    ckpt_path = "/home/cc/workdir/code/lid/outputs/2022-07-16/13-18-lr_0.0001_dr_0.1_mask_0.2_cmask_0.2_bs_4_conform_True/ckpt/last.pt"
+    
+    # 12 no freze 40epoch
+    # without lm cer: 0.0729 0.0216 0.0223   wer: 0.2685 0.0955 0.066
+    # with lm 0.614 0.0288 0.014  wer: 0.229 0.111 0.0305
+    ckpt_path = "/home/cc/workdir/tmp/code/lid/outputs/2022-08-06/15-59-lr_0.0001_dr_0.1_mask_0.1_cmask_0.1_bs_4_conform_True/ckpt/last.pt"
+    
+    # freeze 40epoch minlr=0.1
+    # without lm cer: 0.103 0.032 0.025 wer: 0.369 0.149 0.077
+    # with lm cer: 0.0845 0.0319 0.0159 wer: 0.267 0.1256 0.035
+    ckpt_path = "/home/cc/workdir/tmp/code/lid/outputs/2022-08-07/22-11-lr_0.0001_dr_0.1_mask_0.2_cmask_0.2_bs_4_free_100/ckpt/last.pt"
+    
+    # freeze 30epoch minlr=0.2 grad=4
+    # with lm cer: 0.079 0.0349 0.01765  wer: 0.254 0.134 0.037
+    ckpt_path = "/home/cc/workdir/tmp/code/lid/outputs/2022-08-09/22-58-lr_0.0001_dr_0.1_mask_0.2_cmask_0.2_bs_4_free_30/ckpt/last.pt"
+    
+    # freeze 30 epoch40 minlr0.2 grad=4 +lstm
+    # with lm cer: 0.084 0.0316 0.031 wer 0.268 0.12 0.035
+    # without lm cer: 
+    ckpt_path = "/home/cc/workdir/tmp/code/lid/outputs/2022-08-10/23-48-lr_0.0001_dr_0.1_mask_0.2_cmask_0.2_bs_4_free_30/ckpt/last.pt"
+    
+    #freeze 40 epoch40 minlr0.2 lstm
+    # with lm cer: 0.0735 0.0345 0.0116  wer: 0.247 0.12 0.028  total 0.036/0.112
+    # without lm cer: 0.0848 0.0324 0.0191 wer: 0.33 0.15 0.054 0.0418/0.155
+    # sw nolm total: 0.03538/0.119
+    ckpt_path = "/home/cc/workdir/tmp/code/lid/outputs/2022-08-12/13-06-lr_0.0001_dr_0.1_mask_0.2_cmask_0.2_bs_4_free_100/ckpt/last.pt"
     per_vocab = [
         c.strip() if not c.replace("\n", "") == " " else c.replace("\n", "")
         for c in open(
-            base_path + "data/Persian-vocab.txt", "r"
+            "/home/cc/workdir/code/lid/data/xf/data/Persian-vocab.txt", "r"
         ).readlines()
     ]
     swa_vocab = [
         c.strip() if not c.replace("\n", "") == " " else c.replace("\n", "")
         for c in open(
-            base_path + "data/Swahili-vocab.txt", "r"
+            "/home/cc/workdir/code/lid/data/xf/data/Swahili-vocab.txt", "r"
         ).readlines()
     ]
     vie_vocab = [
         c.strip() if not c.replace("\n", "") == " " else c.replace("\n", "")
         for c in open(
-            base_path + "data/Vietnamese-vocab.txt", "r"
+            "/home/cc/workdir/code/lid/data/xf/data/Vietnamese-vocab.txt", "r"
         ).readlines()
     ]
-    
-    pe_lm_path = base_path + "lm/per_train9lm3.arpa"
-    sw_lm_path = base_path + "lm/swa_train9lm3.arpa"
-    vi_lm_path = base_path + "lm/vie_train9lm3.arpa"
-    
-    # lm 提升 wenet greedy12.18 ->(wav2vec lstm)0.1215 -> 0.1167(wavlm conformer)
-    # -> 0.1066(train) -> (train+cv) 0.0994 -> 0.921 (train+cv+other)
+
+    parse = argparse.ArgumentParser(description="WavLM muti language ASR for 讯飞比赛")
+    parse.add_argument(
+        "--pe_lm_path",
+        type=str,
+        default="/home/cc/workdir/code/lid/data/xf/lm/github/all/v1/outv1pe3gram.arpa",
+    )
+    parse.add_argument(
+        "--sw_lm_path",
+        type=str,
+        default="/home/cc/workdir/code/lid/data/xf/lm/github/all/v1/outv1sw3gram.arpa",
+    )
+    parse.add_argument(
+        "--vi_lm_path",
+        type=str,
+        default="/home/cc/workdir/code/lid/data/xf/lm/github/all/v1/outv1vi3gram.arpa",
+    )
+    parse.add_argument("--alpha", type=float, default=2)
+    parse.add_argument("--beta", type=float, default=1)
+    parse.add_argument("--cutoff_top_n", type=int, default=40)
+    parse.add_argument("--beam_width", type=int, default=1000)
+    arg = parse.parse_args()
+
+    logging.info("使用wandb 进行搜索")
+    exp_name = f"a{arg.alpha}_b{arg.beta}_cut{arg.cutoff_top_n}_beam{arg.beam_width}"
+    wandb_logger = WandbLogger(
+        project="xf_lm",
+        entity="kouyt5",
+        name=exp_name,
+        wandb_id=None,
+        config=arg,
+    )
+    arg = wandb.config
+    print("使用参数: " + str(arg))
+    vi_lm_path = arg.vi_lm_path
+    sw_lm_path = arg.sw_lm_path
+    pe_lm_path = arg.pe_lm_path
+    pe_lm_path = "/home/cc/workdir/code/lid/data/xf/lm/github/all/v5/outv5pe3gram.arpa"
+    sw_lm_path = "/home/cc/workdir/code/lid/data/xf/lm/github/all/v3/outv3sw3gram.arpa"
+    vi_lm_path = "/home/cc/workdir/code/lid/data/xf/lm/github/all/v5/outv5vi3gram.arpa"
     beam_width = arg.beam_width
     alpha = arg.alpha
     beta = arg.alpha
@@ -315,58 +373,41 @@ if __name__ == "__main__":
     )
     module = XFResult(
         ckpt_path=ckpt_path,
-        base_pt_path=arg.base_pt_path,  # "wavlm/ckpts/WavLM-Large.pt"
-        folder=arg.base_path + "data/",  # test集文件夹，解压后的文件夹，下面分别是 Persian, Swahili, Vietnamese三个文件夹
-        result_file="/tmp/result.csv",
+        folder="/home/cc/workdir/code/lid/data/xf/data",
+        result_file="results/result_tiny.txt",
         map_location="cuda:0",
         persian_lm_path=pe_lm_path,
         swahili_lm_path=sw_lm_path,
         vietnamese_lm_path=vi_lm_path,
-        lang_bind=False,
+        lang_bind=True,
         # per_lm_decoder=per_lm_decoder,
         # swa_lm_decoder=swa_lm_decoder,
         # vie_lm_decoder=vie_lm_decoder,
     )
     all_ground_trues = []
     all_pre_texts = []
-    # cer, ground_trues, pre_texts = module.test_val(
-    #     base_path + "data/Persian/dev100.label", lang="Persian"
-    # )
-    # all_ground_trues.extend(ground_trues)
-    # all_pre_texts.extend(pre_texts)
-    # cer, ground_trues, pre_texts = module.test_val(
-    #     base_path + "data/Swahili/dev100.label", lang="Swahili"
-    # )
-    # all_ground_trues.extend(ground_trues)
-    # all_pre_texts.extend(pre_texts)
-    # cer, ground_trues, pre_texts = module.test_val(
-    #     base_path + "data/Vietnamese/dev100.label", lang="Vietnamese"
-    # )
-    # all_ground_trues.extend(ground_trues)
-    # all_pre_texts.extend(pre_texts)
-    # cer = torchmetrics.CharErrorRate()(all_ground_trues, all_pre_texts)
-    # wer = torchmetrics.WordErrorRate()(all_ground_trues, all_pre_texts)
-    # print(f"total cer: {cer}, total wer: {wer}")
-    # common voice
-    all_ground_trues.clear()
-    all_pre_texts.clear()
     cer, ground_trues, pre_texts = module.test_val(
-        "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian/cv_test.label"
+        "/home/cc/workdir/code/lid/data/xf/data/Persian/dev100.label", "Persian"
     )
     all_ground_trues.extend(ground_trues)
     all_pre_texts.extend(pre_texts)
     cer, ground_trues, pre_texts = module.test_val(
-        "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili/cv_test.label"
+        "/home/cc/workdir/code/lid/data/xf/data/Swahili/dev100.label", "Swahili"
     )
     all_ground_trues.extend(ground_trues)
     all_pre_texts.extend(pre_texts)
     cer, ground_trues, pre_texts = module.test_val(
-        "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese/cv_test.label"
+        "/home/cc/workdir/code/lid/data/xf/data/Vietnamese/dev100.label", "Vietnamese"
     )
     all_ground_trues.extend(ground_trues)
     all_pre_texts.extend(pre_texts)
     cer = torchmetrics.CharErrorRate()(all_ground_trues, all_pre_texts)
     wer = torchmetrics.WordErrorRate()(all_ground_trues, all_pre_texts)
     print(f"total cer: {cer}, total wer: {wer}")
+    wandb_logger.log(data={"test_cer": cer, "test_wer": wer})
+
     # 生成结果
-    # module.process()
+    module.process()
+
+    # TODO
+    # 2gram lm

@@ -40,7 +40,8 @@ class DoubleSwish(nn.Module):
     """Swish 改进 https://mp.weixin.qq.com/s/IWFPpA6JMqdkItSbMBRJrA"""
 
     def forward(self, x):
-        return x * (x - 1).sigmoid()
+        # return x * (x - 1).sigmoid()
+        return F.relu(x)
 
 
 class GLU(nn.Module):
@@ -328,7 +329,7 @@ class Conv1dSubSampling2(nn.Module):
     def __init__(self, idim: int, odim: int) -> None:
         super().__init__()
         self.sub_sampling = nn.Sequential(
-            nn.Conv1d(idim, idim, kernel_size=3, stride=2, padding=1), Swish()
+            nn.Conv1d(idim, idim, kernel_size=3, stride=2, padding=1), nn.ReLU()
         )
         self.linear = nn.Linear(idim, odim)
 
@@ -397,14 +398,8 @@ class ConformerModel(nn.Module):
     def __init__(
         self,
         n_blocks: int = 14,
-        win_len=0.025,
-        hop_length: float = 0.01,
-        sr=16000,
         n_mels: int = 80,
         encoder_dim: int = 144,
-        t_mask_prob: float = 0.05,
-        f_mask=27,
-        mask_times: int = 2,
         dim_head=64,
         heads=4,
         ff_mult=4,
@@ -415,23 +410,20 @@ class ConformerModel(nn.Module):
         conv_dropout=0.0,
         double_swish=False,
         sub_sampling: int = 2,
+        stochastic_depth_p: float = 0.7,
+        use_stochastic_depth: bool = False,
     ) -> None:
         super().__init__()
-        self.fbank = FBank(
-            win_len=win_len,
-            sr=sr,
-            hop_length=hop_length,
-            n_mels=n_mels,
-            t_mask_prob=t_mask_prob,
-            f_mask=f_mask,
-            mask_times=mask_times,
-        )
+        self.n_blocks = n_blocks
+        self.stochastic_depth_p = stochastic_depth_p
+        self.use_stochastic_depth = use_stochastic_depth
+        logging.info(f"enable stochastic_depth: {self.use_stochastic_depth}, P = {self.stochastic_depth_p}")
         logging.info(f"下采样倍数: {sub_sampling}")
         if sub_sampling == 4:
             self.sub_sampling = Conv2dSubsampling(n_mels, encoder_dim)
         else:
             self.sub_sampling = Conv1dSubSampling2(n_mels, encoder_dim)
-        self.pos = RelPositionalEncoding(encoder_dim, dropout_rate=0.0)
+        self.pos = RelPositionalEncoding(encoder_dim, dropout_rate=0.1)
         self.linear = nn.Linear(n_mels, encoder_dim)
         self.encoders = nn.ModuleList()
         for i in range(n_blocks):
@@ -454,22 +446,24 @@ class ConformerModel(nn.Module):
         """
         Args:
             x (_type_): raw audio (N, L), egs: (4, 16000)
-        """
-        lengths = torch.sum(pad_mask, dim=1)
-        feats = []
-        for i in range(x.size(0)):
-            tmp = self.fbank(
-                x[i, : x.size(1) - int(lengths[i].item())].unsqueeze(0)
-            ).squeeze(0)
-            feats.append(tmp)
-        x = pad_sequence(feats, batch_first=True)
+        """    
         # x = self.sub_sampling(x.transpose(1, 2)).transpose(1, 2)  # (N, T, C) -> (N, T', C)
         x = self.sub_sampling(x)
         x, _ = self.pos(x)
         # x = self.linear(x)
-        for layer in self.encoders:
-            x = layer(x)
+        for i in range(len(self.encoders)):
+            x = self._layer_dropout(self.encoders[i], x, i)
+        # for layer in self.encoders:
+        #     x = layer(x)
         return x  # (N, T, C)
+    
+    def _layer_dropout(self, layer, x, num_layer):
+        if (not self.use_stochastic_depth) or (not self.training):
+            return layer(x)
+        p = 1 - ((num_layer + 1)/self.n_blocks) * (1 - self.stochastic_depth_p)
+        if (random.random() <= p):
+           x = layer(x)
+        return x
 
 
 class PositionalEncoding(torch.nn.Module):

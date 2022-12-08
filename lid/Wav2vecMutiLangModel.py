@@ -1,4 +1,5 @@
 from collections import OrderedDict
+import logging
 import math, sys, os
 
 # sys.path.append(os.path.join(".."))
@@ -9,6 +10,7 @@ import torchaudio
 from torch.nn.utils.rnn import pad_sequence
 import torchmetrics
 import numpy as np
+from lid.WavLMMutiLangModel import ConformerLinear
 from s3prl_updream.wav2vec.wav2vec2_expert import UpstreamExpert
 from s3prl_updream.interfaces import Featurizer
 
@@ -30,6 +32,10 @@ class Wav2vecMutiLangModel(torch.nn.Module):
         lang2vocab: Dict = None,  # {"cn": 4442}) -> None
         lang2index: Dict = None,
         hidden_dim: int = 128,
+        conformer_linear:bool = False,
+        use_mask:bool = False,
+        dim_head: int = 32,  # Conformer
+        num_head: int = 8,
     ):
         super().__init__()
         self.data_processor = DataProcessor()
@@ -41,14 +47,20 @@ class Wav2vecMutiLangModel(torch.nn.Module):
             mask=mask,
             num_layers=num_layers,
             lang2vocab=lang2vocab,
+            conformer_linear=conformer_linear,
+            use_mask=use_mask,
+            dim_head=dim_head,
+            num_head=num_head,
         )
         self.lang_discriminator = LangDiscriminator(
             lang2index=lang2index, lang2vocab=lang2vocab, hidden_dim=hidden_dim
         )
 
-    def forward(self, x, sample_rate: int = 16000):
+    def forward(self, x, sample_rate: int = 16000, lang:str=None):
         x = self.data_processor(x, sample_rate)
-        x = self.model(x)
+        x = self.model(x, lang)
+        if lang is not None:
+            return x, (None, None)
         lid = self.lang_discriminator(x)
         return x, lid
 
@@ -163,38 +175,64 @@ class Wav2vecMutiModel(torch.nn.Module):
         num_layers: int = 1,
         lang2vocab: Dict = None,  # {"cn": 4442}
         use_cer: bool = True,
+        conformer_linear: bool = False,
+        use_mask: bool = False,
+        dim_head: int = 32,  # Conformer
+        num_head: int = 8,
     ) -> None:
         super().__init__()
         self.lang2vocab = lang2vocab
         drop_layer = feature_selection == "last_hidden_state"
+        self.conformer_linear = conformer_linear
         self.featurizer = Featurizer(
             upstream=UpstreamExpert(ckpt=pt_path, drop_layer=drop_layer, mask=mask),
             feature_selection=feature_selection,  # last_hidden_state, hidden_state_{0-24}
             upstream_device="cpu",
             layer_selection=None,  # 选择后的第几层特征 0-24
         )
-        self.rnn = torch.nn.LSTM(
-            input_size=linear_dim,
-            batch_first=True,  # input = (batch, seq, feature)
-            hidden_size=linear_dim // 2,
-            num_layers=num_layers,
-            dropout=dropout,
-            bidirectional=True,
-        )
-        self.last_projects = torch.nn.ModuleDict(
-            [
+        # self.rnn = torch.nn.LSTM(
+        #     input_size=linear_dim,
+        #     batch_first=True,  # input = (batch, seq, feature)
+        #     hidden_size=linear_dim // 2,
+        #     num_layers=num_layers,
+        #     dropout=dropout,
+        #     bidirectional=True,
+        # )
+        if conformer_linear:
+            self.last_projects = torch.nn.ModuleDict(
+                    [
+                        [
+                            key,
+                            ConformerLinear(
+                                dropout=dropout,
+                                linear_dim=linear_dim,
+                                num_layers=num_layers,
+                                vocab_size=lang2vocab[key],
+                                double_swish=False,
+                                use_mask=use_mask,
+                                dim_head=dim_head,
+                                num_head=num_head,
+                            ),
+                        ]
+                        for key in lang2vocab.keys()
+                    ]
+                )
+        else:
+            logging.info("使用LSTM")
+            self.last_projects = torch.nn.ModuleDict(
                 [
-                    key,
-                    LSTMLinear(
-                        dropout=dropout,
-                        linear_dim=linear_dim,
-                        num_layers=num_layers,
-                        vocab_size=lang2vocab[key],
-                    ),
+                    [
+                        key,
+                        LSTMLinear(
+                            dropout=dropout,
+                            linear_dim=linear_dim,
+                            num_layers=num_layers,
+                            vocab_size=lang2vocab[key],
+                        ),
+                    ]
+                    for key in lang2vocab.keys()
                 ]
-                for key in lang2vocab.keys()
-            ]
-        )
+            )
         self.loss_fns = {}
         self.wer_fns = {}
         for key in lang2vocab.keys():
@@ -205,19 +243,19 @@ class Wav2vecMutiModel(torch.nn.Module):
             torchmetrics.WER() if not use_cer else torchmetrics.CharErrorRate()
         )
 
-    def forward(self, batch):
+    def forward(self, batch, lang=None):
         feature = self.featurizer.upstream(batch)
         feature = self.featurizer(batch, feature)
         max_len = max(batch, key=lambda x: x.shape[0]).shape[0]
         percents = [item.shape[0] / max_len for item in batch]
         feature_len = [percent * (feature.shape[1]) for percent in percents]
         length = torch.floor(torch.Tensor(feature_len)).long()
-        feature = torch.nn.utils.rnn.pack_padded_sequence(
-            feature, enforce_sorted=False, lengths=length, batch_first=True
-        )
         res = {}
-        for key in self.lang2vocab.keys():
-            res[key] = self.last_projects[key](feature)
+        if lang is not None:
+            res[lang] = self.last_projects[lang](feature, length)
+        else:
+            for key in self.lang2vocab.keys():
+                    res[key] = self.last_projects[key](feature, length)
         return res
 
 
@@ -242,7 +280,10 @@ class LSTMLinear(torch.nn.Module):
         self.dr = torch.nn.Dropout(dropout)
         self.linear = torch.nn.Linear(linear_dim, vocab_size + 1)
 
-    def forward(self, feature):
+    def forward(self, feature, length):
+        feature = torch.nn.utils.rnn.pack_padded_sequence(
+            feature, enforce_sorted=False, lengths=length, batch_first=True
+        )
         x, h = self.rnn(feature)
         x, _ = torch.nn.utils.rnn.pad_packed_sequence(x, batch_first=True)
         x = self.dr(x)

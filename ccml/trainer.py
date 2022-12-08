@@ -1,6 +1,7 @@
 import contextlib
 import logging
 import os
+import time
 from typing import Any, List, Optional, Tuple
 import torch
 from torch.utils.data import DataLoader
@@ -11,6 +12,8 @@ from tqdm import tqdm
 import torch.distributed as dist
 from ccml.loggers.base_logger import BaseLogger
 from ccml.loggers.logger import Logger
+from ccml.utils.profile import register_cost_statistic
+from ccml.utils.profile import _time_cost_recoder
 
 
 class Trainer:
@@ -490,10 +493,13 @@ class Trainer:
                 else:
                     context = contextlib.nullcontext
                 with context():
+                    last_time = time.time()
                     for i, batch in tbar:
                         if i > self.train_data_factor * len(self.train_dataloader):
                             break  # 用于快速验证数据训练流程
-
+                        # forward time 统计
+                        pre_time = time.time()
+                        _time_cost_recoder.recoder("get_batch", last_time-pre_time)
                         # 如果是分布式又采用的梯度累加
                         # https://github.com/wenet-e2e/wenet/blob/ae52150ab0f108767f33147d9fdb3aefb346ccb8/wenet/utils/executor.py
                         if (
@@ -510,6 +516,7 @@ class Trainer:
                                 batch = self.batch_to_device(batch)
                                 train_out = self.train_loop(batch)
                                 # detach其中的参数
+                                detach_pre_time = time.time()
                                 all_train_results.append(self.detach_dict(train_out))
                                 loss = train_out["loss"] / self.accumulate_grad
                                 avg_accumulate_loss = (
@@ -519,8 +526,12 @@ class Trainer:
                                     moving_total_loss + loss.detach().item()
                                 )
                                 accumlate_count += 1
+                                _time_cost_recoder.recoder("forward.detach", time.time() - detach_pre_time)
+                            scale_pre_time = time.time()
                             self.scalar.scale(loss).backward()
-
+                            _time_cost_recoder.recoder("forward.backward", time.time() - scale_pre_time)
+                        _time_cost_recoder.recoder("forward", time.time() - pre_time)
+                        pre_time = time.time()
                         # 梯度累积
                         if (
                             i % self.accumulate_grad == self.accumulate_grad - 1
@@ -558,6 +569,8 @@ class Trainer:
                             avg_accumulate_loss = 0.0
                             accumlate_count = 0
                             self.current_step += 1
+                            _time_cost_recoder.recoder("loss.step", time.time() - pre_time)
+                        last_time = time.time()
             # do swa
             if (
                 self.use_swa
@@ -726,6 +739,7 @@ class Trainer:
         if not resume_train_states:
             return model, 0, optimizer, scalar, lr_scheduler, logger
         optimizer.load_state_dict(state_dicts["optimizer"])
+        optimizer.param_groups[0]['capturable'] = True
         if scalar is not None:
             scalar.load_state_dict(state_dicts["scalar"])
         if lr_scheduler is not None:
@@ -760,6 +774,7 @@ class Trainer:
                 new_dict[key] = value
         return new_dict
 
+    @register_cost_statistic(need_return=True)
     def batch_to_device(self, batch: List[Any]):
         batch = list(batch)
         for i in range(len(batch)):

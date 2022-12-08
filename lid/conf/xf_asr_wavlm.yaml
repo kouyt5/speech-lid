@@ -2,19 +2,22 @@ defaults:
   - base: custom  # 基本的日志配置
 
 model:
-  dropout: 0.0
+  dropout: 0.1
   linear_dim: 768
   mask: True
   num_layers: 1
-  hidden_dim: 32
+  hidden_dim: 64
   model_name: &model_name >- 
-    lr_${module.optimizer_param.lr}_dr_${model.dropout}_mask_${model.mask_prob}_cmask_${model.mask_channel_prob}_bs_${data.sampler_common.train_batch_size}_conform_${module.conformer_linear}
-  pt_path: /home/cc/workdir/code/wav2vec-exp/ckpts/wav2vec_small.pt
-  feature_selection: "hidden_states"
+    limit_WavLMBase_lr_${module.optimizer_param.lr}_dr_${model.dropout}_mask_${model.mask_prob}_cmask_${model.mask_channel_prob}_bs_${data.sampler_common.train_batch_size}_conform_${module.conformer_linear}
+  pt_path: /hdd/1/chenc/lid/speech-lid/lid/wavlm/ckpts/WavLM-Base-plus.pt
+  feature_selection: "last_hidden_state"
   use_pre_train: true
-  mask_channel_prob: 0.
+  mask_channel_prob: 0.15
   double_swish: false
-  mask_prob: 0
+  mask_prob: 0.15
+  use_mask: false  # conformer 使用mask
+  dim_head: 32
+  num_head: 8
 
 supervised: false  # 走监督训练module
 
@@ -22,7 +25,7 @@ module:
   optimizer_name: adam
   optimizer_param:
     # momentum: 0.9
-    weight_decay: 0.000001
+    weight_decay: 0.000001  # 太大了？
     # nesterov: false
     lr: 0.0001
   scheduler: tristage  # tristage
@@ -45,10 +48,13 @@ data:
   source: xf_asr
   feature:
     type: wav  # wav, mel 特征类型
+    speed_shift: true
+    pitch_shift: false
+    reverb: true
   dataloader_params:
     pin_memory: true
-    num_workers: 0
-    # prefetch_factor: 10
+    num_workers: 12
+    prefetch_factor: 10
     train_batch_sampler: null
     val_batch_sampler: null
     test_batch_sampler: null
@@ -81,19 +87,19 @@ data:
 
   sampler_common:
     train_batch_size: 4
-    val_batch_size: 4
+    val_batch_size: 1
     test_batch_size: 1
-  max_duration: 16.7
+  max_duration: 13
 
 trainer:
-  total_epoch: 40
+  total_epoch: 20
   gpu_id: 0
   local_rank: 0
   world_size: 1
   ddp: false
   backend: 'nccl'
   init_method: env://  # 目前只支持env初始化
-  accumulate_grad: 1
+  accumulate_grad: 4
   master_addr: localhost
   master_port: 11488
   use_amp: true
@@ -102,7 +108,7 @@ trainer:
   train_data_factor: 1.0
   log_interval: 10
   checkpoint_path: null  # trainer 的checkpoint
-  resume_train_states: True
+  resume_train_states: true
 
 logger:
   wandb:

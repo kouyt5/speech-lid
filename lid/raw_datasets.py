@@ -1,6 +1,8 @@
 import csv, os
 import sys
 
+from lid.audio_processor import read_audio, spectrogram_augment, wav2mel, wav_augment
+
 sys.path.append("../")
 from email.mime import base
 from email.policy import default
@@ -31,6 +33,7 @@ class RawDataset(Dataset):
         super().__init__()
         self.train = train
         # =================read datasets==================
+        logging.info("read datasets: " + manifest_path)
         if source == "common_voice":
             datasets = self._get_dataset(manifest_path=manifest_path)
         else:
@@ -48,8 +51,8 @@ class RawDataset(Dataset):
                 self.datasets.append(data)
                 total_duration += data["duration"]
         logging.info(
-            f"数据集语种: {self.lang()}, 过滤{total_filter_count}条," +
-            f"{total_filter_duration/ 60}分钟, 总时长{total_duration / 60}, train:{self.train}"
+            f"数据集语种: {self.lang()}, 过滤{total_filter_count}条,"
+            + f"{total_filter_duration/ 60}分钟, 总时长{total_duration / 60}, train:{self.train}"
         )
         # =================read datasets end==================
 
@@ -105,7 +108,7 @@ class RawDataset(Dataset):
             lang = manifest_path.split("/")[-2]
             base_path = "/".join(manifest_path.split("/")[:-1])
             base_path = os.path.join(
-                base_path, "wav", "train" # if self.train else "test"
+                base_path, "wav", "train"  # if self.train else "test"
             )
             for line in f.readlines():
                 data = {}
@@ -190,6 +193,21 @@ class MergedDataset(Dataset):
         lang2tokenizer: Dict = None,
         max_duration: float = 16.7,
         source: str = "common_voice",
+        type: str = "wav",  # wav, mel 特征类型
+        speed_shift=True,
+        pitch_shift=True,
+        reverb=True,
+        use_kaildi=False,
+        win_length=0.025,
+        hop_length=0.01,
+        n_mels=80,
+        n_fft=512,
+        pad=0,
+        sr=16000,
+        t_mask=0.05,
+        f_mask=27,
+        mask_times=2,
+        t_stretch=False,
     ) -> None:
         super().__init__()
         self.datasets = []
@@ -197,6 +215,22 @@ class MergedDataset(Dataset):
         self.lang2index_dict = lang2index_dict
         self.lang2tokenizer = lang2tokenizer
         self.train = train
+        self.type = type
+
+        self.speed_shift = speed_shift
+        self.pitch_shift = pitch_shift
+        self.reverb = reverb
+        self.use_kaildi = use_kaildi
+        self.win_length = win_length
+        self.hop_length = hop_length
+        self.n_mels = n_mels
+        self.n_fft = n_fft
+        self.pad = pad
+        self.sr = sr
+        self.t_mask = t_mask
+        self.f_mask = f_mask
+        self.mask_times = mask_times
+        self.t_stretch = t_stretch
         #
         for manifest_file in manifest_files:
             dataset = RawDataset(
@@ -220,7 +254,7 @@ class MergedDataset(Dataset):
             index (int): index
 
         Returns:
-            wav: is a Tensor that shape is [1, L]
+            wav: is a Tensor that shape is [1, L] or mel feature [1, n_mels, L]
             target_text: contain encoded. text shape is [L,]
             path: audio abs path
 
@@ -233,43 +267,41 @@ class MergedDataset(Dataset):
         item = self.datasets[index]
         audio_path = item["path"]
         text = item["sentence"]
-        wav, sr = torchaudio.load(audio_path)
-        wav = self.normalize_wav(wav)  # 归一化
+        wav, sr = read_audio(audio_path, normalize=True)
         if self.train:
-            # wav = self.sub_secquence(wav, 0.05)  # 取音频子序列
-            # dither
-            wav += 1e-5 * torch.rand_like(wav)
-            # preemyhasis
-            wav = torch.cat(
-                (wav[:, 0].unsqueeze(1), wav[:, 1:] - 0.97 * wav[:, :-1]),
-                dim=1,
-            )
-            # speed preturb [0.9, 1, 1.1]
-            speed = random.choice([0.9, 1.0, 1.1])
-            pitchs = random.choice([-80, -60, -40, -20, 0, 0, 20, 40, 60, 80])
-            pitchs = random.choice([-240, -200, -160, -120, -80, -40, 0, 40, 80, 120, 160, 200, 240])
-            wav, _ = torchaudio.sox_effects.apply_effects_tensor(
+            wav, sr = wav_augment(
                 wav,
                 sr,
-                [["speed", str(speed)], 
-                 ["pitch", str(pitchs)], 
-                 ["rate", str(sr)]],
-            )  # 调速
-            # reverb
-            room_size = random.randint(0, 100)
-            wav = augment.EffectChain().reverb(50,50,room_size).channels(1).apply(wav, src_info={'rate': sr})
-            # wav = self.random_cut(wav, 0.05, 3)  # 任意裁剪三次音频
+                speed_shift=self.speed_shift,
+                pitch_shift=self.pitch_shift,
+                reverb=self.reverb,
+            )
         lang = item["locale"]
+        # 特征选择
+        if self.type == "mel":
+            spec = wav2mel(
+                wav,
+                use_kaildi=self.use_kaildi,
+                win_length=self.win_length,
+                hop_length=self.hop_length,
+                n_mels=self.n_mels,
+                n_fft=self.n_fft,
+                pad=self.pad,
+                sr=self.sr,
+            )
+            if self.train:
+                spec = spectrogram_augment(
+                    spec,
+                    sr=self.sr,
+                    n_mels=self.n_mels,
+                    hop_length=self.hop_length,
+                    t_mask=self.t_mask,
+                    f_mask=self.f_mask,
+                    mask_times=self.mask_times,
+                    t_stretch=self.t_stretch,
+                )
+            return spec, self.lang2tokenizer[lang].encoder(text), audio_path, lang
         return wav, self.lang2tokenizer[lang].encoder(text), audio_path, lang
-
-    def normalize_wav(self, wav: torch.Tensor):
-        """对音频做归一化处理
-
-        Args:
-            wav (torch.Tensor): (1, T)
-        """
-        std, mean = torch.std_mean(wav, dim=-1)
-        return torch.div(wav - mean, std + 1e-6)
 
     def random_cut(
         self, x: torch.Tensor, weight: float = 0.1, count: int = 1
@@ -301,7 +333,13 @@ class MergedDataset(Dataset):
         return x[:, location : location + target_length]
 
     def collate_fn(self, batch):
-        wavs = [batch[i][0].squeeze(0) for i in range(len(batch))]
+        if self.type == "mel":
+            wavs = pad_sequence(
+                [batch[i][0].squeeze(0).transpose(0, 1) for i in range(len(batch))],
+                batch_first=True,
+            )  # (Batch, T, n_mels)
+        else:
+            wavs = [batch[i][0].squeeze(0) for i in range(len(batch))]
         texts = pad_sequence([batch[i][1] for i in range(len(batch))]).transpose(1, 0)
         audio_paths = [batch[i][2] for i in range(len(batch))]
 
@@ -439,6 +477,7 @@ def test_common_voice():
         ],
         lang2tokenizer=tokenizer_dict,
         lang2index_dict=lang2index_dict,
+        type="mel",
     )
 
     # 生成vocab文件
@@ -496,20 +535,21 @@ def test_xf():
         lang2index_dict=lang2index_dict,
         source="xf",
         train=True,
+        type="mel",
     )
 
     # 生成vocab文件
-    vocab_dict = merge_dataset.export_dict()
-    for lang, vocab in vocab_dict.items():
-        vocab_path = os.path.join(
-            "/home/cc/workdir/code/lid/data/xf/data", lang + "-vocab.txt"
-        )
-        with open(vocab_path, "w") as f:
-            for v in vocab:
-                f.write(v + "\n")
+    # vocab_dict = merge_dataset.export_dict()
+    # for lang, vocab in vocab_dict.items():
+    #     vocab_path = os.path.join(
+    #         "/home/cc/workdir/code/lid/data/xf/data", lang + "-vocab.txt"
+    #     )
+    #     with open(vocab_path, "w") as f:
+    #         for v in vocab:
+    #             f.write(v + "\n")
     ####################生成结束########################
     batch_sample = MutiBatchSampler(
-        merge_dataset.samplers, batch_size=1, drop_last=False
+        merge_dataset.samplers, batch_size=2, drop_last=False
     )
     dataloader = DataLoader(
         dataset=merge_dataset,
@@ -517,7 +557,7 @@ def test_xf():
         num_workers=0,
         collate_fn=merge_dataset.collate_fn,
         pin_memory=True,
-        # batch_size=8,
+        # batch_size=2,
         # shuffle=True,
     )
 
