@@ -1,0 +1,120 @@
+defaults:
+  - base: custom  # 基本的日志配置
+
+model:
+  dropout: 0.1
+  linear_dim: 768
+  mask: True
+  num_layers: 1
+  hidden_dim: 64
+  model_name: &model_name >- 
+    WavLMBase_lid_lr_${module.optimizer_param.lr}_dr_${model.dropout}_mask_${model.mask_prob}_cmask_${model.mask_channel_prob}_bs_${data.dataloader_params.train_batch_size}
+  pt_path: /hdd/1/chenc/lid/speech-lid/lid/wavlm/ckpts/WavLM-Base-plus.pt
+  feature_selection: "last_hidden_state"
+  use_pre_train: true
+  mask_channel_prob: 0.15
+  double_swish: false
+  mask_prob: 0.15
+  last_model_name: xvector
+
+supervised: false  # 走监督训练module
+
+module:
+  optimizer_name: adam
+  optimizer_param:
+    # momentum: 0.9
+    weight_decay: 0.000001  # 太大了？
+    # nesterov: false
+    lr: 0.0001
+  scheduler: tristage  # tristage
+  scheduler_param:
+    mode: min
+    factor: 0.1
+    patience: 5
+    cooldown: 3
+    min_lr: 0.00001
+  sr: 16000
+  interval: 50
+  freeze_tranformer_epoch: 1
+  freeze_encoder_epoch: 100
+  froze_wav2vec_model_epoch: -1
+  use_wav2vec: false
+  conformer_linear: true
+  extrme_mode: true
+
+data:
+  source: xf_asr
+  feature:
+    type: wav  # wav, mel 特征类型
+    speed_shift: true
+    pitch_shift: false
+    reverb: true
+  dataloader_params:
+    pin_memory: true
+    num_workers: 12
+    train_batch_size: 8
+    val_batch_size: 4
+    prefetch_factor: 10
+    train_batch_sampler: null
+    val_batch_sampler: null
+    test_batch_sampler: null
+  langs:
+    -
+      train_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian/train9.label
+      # train_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian/dev1.label
+      val_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian/dev1.label
+      test_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian/dev1.label
+      lang: Persian
+      id: 0
+      vocab: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian-vocab.txt
+    -
+      # train_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili/dev1.label  # 6394
+      train_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili/train9.label
+      # val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-TW/dev.tsv  # 4619
+      val_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili/dev1.label
+      test_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili/dev1.label
+      lang: Swahili
+      id: 1
+      vocab: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili-vocab.txt
+    -
+      # train_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese/dev1.label
+      train_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese/train9.label
+      val_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese/dev1.label
+      test_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese/dev1.label
+      lang: Vietnamese
+      id: 2
+      vocab: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese-vocab.txt
+
+  sampler_common:
+    train_batch_size: 4
+    val_batch_size: 1
+    test_batch_size: 1
+  max_duration: 13
+
+trainer:
+  total_epoch: 20
+  gpu_id: 0
+  local_rank: 0
+  world_size: 1
+  ddp: false
+  backend: 'nccl'
+  init_method: env://  # 目前只支持env初始化
+  accumulate_grad: 4
+  master_addr: localhost
+  master_port: 11488
+  use_amp: true
+  use_swa: false
+  eval_interval: 1
+  train_data_factor: 1.0
+  log_interval: 10
+  checkpoint_path: null  # trainer 的checkpoint
+  resume_train_states: true
+
+logger:
+  wandb:
+    project: xf_asr
+    entity: kouyt5
+    name: *model_name
+    wandb_id: null
+
+stage: train  # test, train

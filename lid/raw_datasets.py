@@ -300,8 +300,18 @@ class MergedDataset(Dataset):
                     mask_times=self.mask_times,
                     t_stretch=self.t_stretch,
                 )
-            return spec, self.lang2tokenizer[lang].encoder(text), audio_path, lang
-        return wav, self.lang2tokenizer[lang].encoder(text), audio_path, lang
+            return self._result_wrapper(
+                spec, text, audio_path, lang
+            )
+        return self._result_wrapper(
+            wav, text, audio_path, lang
+        )
+
+    def _result_wrapper(self, spec, text, path, lang):
+        if self.lang2tokenizer is None:
+            return spec, torch.LongTensor([0]), path, lang
+        else:
+            return spec, self.lang2tokenizer[lang].encoder(text), path, lang
 
     def random_cut(
         self, x: torch.Tensor, weight: float = 0.1, count: int = 1
@@ -508,19 +518,19 @@ def test_common_voice():
 
 def test_xf():
     logging.basicConfig(level=logging.NOTSET)
-    file_path = "/home/cc/workdir/code/lid/data/xf/data/Persian/train.label"
-    file_path2 = "/home/cc/workdir/code/lid/data/xf/data/Swahili/train.label"
-    file_path3 = "/home/cc/workdir/code/lid/data/xf/data/Vietnamese/train.label"
+    file_path = "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian/dev1.label"
+    file_path2 = "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili/dev1.label"
+    file_path3 = "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese/dev1.label"
 
     tokenizer_dict = {
         "Persian": CTCTokenizer(
-            "/home/cc/workdir/code/lid/data/xf/data/Persian-vocab.txt"
+            "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian-vocab.txt"
         ),
         "Swahili": CTCTokenizer(
-            "/home/cc/workdir/code/lid/data/xf/data/Swahili-vocab.txt"
+            "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili-vocab.txt"
         ),
         "Vietnamese": CTCTokenizer(
-            "/home/cc/workdir/code/lid/data/xf/data/Vietnamese-vocab.txt"
+            "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese-vocab.txt"
         ),
     }
     lang2index_dict = {"Persian": 0, "Swahili": 1, "Vietnamese": 2}
@@ -531,7 +541,7 @@ def test_xf():
             file_path2,
             file_path3,
         ],
-        lang2tokenizer=tokenizer_dict,
+        # lang2tokenizer=tokenizer_dict,
         lang2index_dict=lang2index_dict,
         source="xf",
         train=True,
@@ -553,7 +563,7 @@ def test_xf():
     )
     dataloader = DataLoader(
         dataset=merge_dataset,
-        batch_sampler=batch_sample,
+        # batch_sampler=batch_sample,
         num_workers=0,
         collate_fn=merge_dataset.collate_fn,
         pin_memory=True,

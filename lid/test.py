@@ -329,24 +329,24 @@ if __name__ == "__main__":
     )
     all_ground_trues = []
     all_pre_texts = []
-    # cer, ground_trues, pre_texts = module.test_val(
-    #     base_path + "data/Persian/dev100.label", lang="Persian"
-    # )
-    # all_ground_trues.extend(ground_trues)
-    # all_pre_texts.extend(pre_texts)
-    # cer, ground_trues, pre_texts = module.test_val(
-    #     base_path + "data/Swahili/dev100.label", lang="Swahili"
-    # )
-    # all_ground_trues.extend(ground_trues)
-    # all_pre_texts.extend(pre_texts)
-    # cer, ground_trues, pre_texts = module.test_val(
-    #     base_path + "data/Vietnamese/dev100.label", lang="Vietnamese"
-    # )
-    # all_ground_trues.extend(ground_trues)
-    # all_pre_texts.extend(pre_texts)
-    # cer = torchmetrics.CharErrorRate()(all_ground_trues, all_pre_texts)
-    # wer = torchmetrics.WordErrorRate()(all_ground_trues, all_pre_texts)
-    # print(f"total cer: {cer}, total wer: {wer}")
+    cer, ground_trues, pre_texts = module.test_val(
+        base_path + "data/Persian/dev1.label"#, lang="Persian"
+    )
+    all_ground_trues.extend(ground_trues)
+    all_pre_texts.extend(pre_texts)
+    cer, ground_trues, pre_texts = module.test_val(
+        base_path + "data/Swahili/dev1.label"#, lang="Swahili"
+    )
+    all_ground_trues.extend(ground_trues)
+    all_pre_texts.extend(pre_texts)
+    cer, ground_trues, pre_texts = module.test_val(
+        base_path + "data/Vietnamese/dev1.label"#, lang="Vietnamese"
+    )
+    all_ground_trues.extend(ground_trues)
+    all_pre_texts.extend(pre_texts)
+    cer = torchmetrics.CharErrorRate()(all_ground_trues, all_pre_texts)
+    wer = torchmetrics.WordErrorRate()(all_ground_trues, all_pre_texts)
+    print(f"total cer: {cer}, total wer: {wer}")
     # common voice
     all_ground_trues.clear()
     all_pre_texts.clear()

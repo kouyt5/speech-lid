@@ -322,7 +322,7 @@ class Trainer:
             else:
                 self.val_dataloader = DataLoader(
                     self.val_dataset,
-                    batch_size=train_batch_size,
+                    batch_size=val_batch_size,
                     sampler=self.val_sampler,
                     num_workers=num_workers,
                     pin_memory=pin_memory,
