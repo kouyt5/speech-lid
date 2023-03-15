@@ -15,6 +15,7 @@ from lid.raw_datasets import MergedDataset, MutiBatchSampler
 import hydra
 from omegaconf import DictConfig
 from ccml.loggers.wandb_logger import WandbLogger
+from ccml.loggers.comet_logger import CometLogger
 
 
 @hydra.main(config_path="conf", config_name="xf_asr_wavlm_lid")
@@ -32,6 +33,7 @@ def main(cfg: DictConfig) -> None:
     # 数据加载参数
     data_conf = cfg["data"]
     wandb_conf = cfg["logger"]["wandb"]
+    comet_conf = cfg["logger"]["comet"]
     supervised = cfg["supervised"]
 
     seed_everything(0)  # 随机数种子
@@ -105,11 +107,10 @@ def main(cfg: DictConfig) -> None:
     #     drop_last=False,
     # )
     dataloader_params = dict(data_conf["dataloader_params"])
-    wandb_logger = WandbLogger(**wandb_conf)  # 在线日志记录回调
+    # wandb_logger = WandbLogger(**wandb_conf)  # 在线日志记录回调
+    comet_logger = CometLogger(**comet_conf)
     trainer = Trainer(
-        callbacks=[ckpt_callback, lr_callback, profile_callback],
-        loggers=[wandb_logger],
-        **train_conf,
+        callbacks=[ckpt_callback, lr_callback, profile_callback], loggers=[comet_logger], **train_conf
     )  # 训练器
     if cfg["stage"] == "train":
         trainer.fit(

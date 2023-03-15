@@ -11,6 +11,7 @@ from ccml.utils.profile import register_cost_statistic
 from lid.Wav2vecMutiLangModel import Wav2vecMutiLangModel
 from lid.WavLMMutiLangModel import WavLMMutiLangModel
 from ccml.utils.profile import _time_cost_recoder
+from lid.eer import EER2, CAvg
 
 
 class LidModule(CCMLModule):
@@ -133,6 +134,8 @@ class LidModule(CCMLModule):
         self.avg_wer = 0
         self.predict_texts = None
         self.countdown_20 = 0
+        self.eer = EER2()
+        self.cavg = CAvg(num_class=len(self.lang2index_dict.keys()))
 
     def config_optim(
         self, *args, **kwargs
@@ -348,6 +351,11 @@ class LidModule(CCMLModule):
         outacc = self.infer(raw_wavs, 16000)
         index = torch.argmax(outacc[1], dim=-1)
         index = index[0].item()
+        prob = outacc[1].squeeze(0).detach().cpu().numpy().tolist()
+        prob = [(-1/(item-1e-9)) for item in prob]
+        prob = [item/sum(prob) for item in prob]
+        self.eer.update([prob], [index])
+        self.cavg.update([prob], [index])
         pre_lang = self.index2lang_dict[index]
         true_lang = self.index2lang_dict[batch[5][0].item()]
         return {
@@ -373,13 +381,18 @@ class LidModule(CCMLModule):
             if item["lang_corr"]:
                 lang_corr += 1
         total_wer = self.model.model.wer_fn(all_predict_texts, all_label_texts)
-
+        total_eer = self.eer.compute()
+        total_cavg = self.cavg.compute()
+        self.eer.reset()
+        self.cavg.reset()
         self.trainer.logger.log(
             data={
                 "val_loss": total_val_loss / len(outputs),
                 "val_acc": lang_corr/len(outputs),
                 "val_wer": total_wer,
                 "epoch": self.trainer.current_epoch,
+                "eer": total_eer,
+                "cavg": total_cavg
             },
             progress=True,
             stage="val",
@@ -388,6 +401,9 @@ class LidModule(CCMLModule):
         )
         logging.info(
             f"val_wer={total_wer}, val_avg_loss={total_val_loss / len(outputs)}"
+        )
+        logging.info(
+            f"epoch: {self.trainer.current_epoch}, val_eer: {total_eer}, val_cavg: {total_cavg}"
         )
         logging.info(f"val acc: {lang_corr/len(outputs)}")
         self.trainer.logger.remove_key(["loss", "wer"])

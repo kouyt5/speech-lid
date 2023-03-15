@@ -30,14 +30,8 @@ class ConformerMutiLangModel(torch.nn.Module):
         dropout: float = 0.0,  # 最后的线性映射层dropout
         linear_dim: int = 144,  # 最后线性层输入维度
         n_blocks: int = 14,
-        win_len=0.025,
-        hop_length: float = 0.01,
-        sr=16000,
         n_mels: int = 80,
         encoder_dim: int = 144,  # 和linear_dim保持一致
-        t_mask_prob: float = 0.05,  # 时域mask概率
-        f_mask=27,
-        mask_times: int = 2,  # mask次数
         dim_head=64,  # att head 维度
         last_dim_head:int = 32,  # 最后一层的head维度
         heads=4,  # att head数
@@ -61,14 +55,8 @@ class ConformerMutiLangModel(torch.nn.Module):
             dropout = dropout,  # 最后的线性映射层dropout
             linear_dim = linear_dim,  # 最后线性层输入维度
             n_blocks = n_blocks,  # Conformer 模型参数
-            win_len= win_len,
-            hop_length = hop_length,
-            sr=sr,
             n_mels = n_mels,
             encoder_dim = encoder_dim,
-            t_mask_prob = t_mask_prob,
-            f_mask=f_mask,
-            mask_times = mask_times,
             dim_head=dim_head,
             last_dim_head=last_dim_head,
             heads=heads,
@@ -204,14 +192,8 @@ class ConformerMutiModel(torch.nn.Module):
         dropout: float = 0.0,  # 最后的线性映射层dropout
         linear_dim: int = 768,  # 最后线性层输入维度
         n_blocks: int = 14,
-        win_len=0.025,
-        hop_length: float = 0.01,
-        sr=16000,
         n_mels: int = 80,
         encoder_dim: int = 144,
-        t_mask_prob: float = 0.05,
-        f_mask=27,
-        mask_times: int = 2,
         dim_head=64,
         last_dim_head: int = 32,
         heads=4,
@@ -229,14 +211,8 @@ class ConformerMutiModel(torch.nn.Module):
         self.conformer_linear = conformer_linear
         self.featurizer = ConformerModel(
             n_blocks = n_blocks,  # Conformer 模型参数
-            win_len= win_len,
-            hop_length = hop_length,
-            sr=sr,
             n_mels = n_mels,
             encoder_dim = encoder_dim,
-            t_mask_prob = t_mask_prob,
-            f_mask=f_mask,
-            mask_times = mask_times,
             dim_head=dim_head,
             heads=heads,
             ff_mult=ff_mult,
@@ -400,7 +376,8 @@ class LangDiscriminator(torch.nn.Module):
             torch.nn.ReLU(inplace=False),
             torch.nn.Linear(hidden_dim, self.classes, bias=True),
         )
-        self.acc = torchmetrics.Accuracy()
+        self.acc = torchmetrics.Accuracy(task="multiclass",
+            num_classes=len(self.lang2vocab.keys()))
         self.cross_entropy = torch.nn.CrossEntropyLoss()
 
     def forward(self, x):

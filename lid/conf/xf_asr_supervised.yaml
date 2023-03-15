@@ -11,17 +11,11 @@ model:
   hidden_dim: 32  # 语种识别模型隐藏层维度
   use_cer: true
   conformer_linear: true
-  dropout: 0.0  # 最后的线性映射层dropout
+  dropout: 0.1  # 最后的线性映射层dropout
   linear_dim: 144  # 最后线性层输入维度
   n_blocks: 14
-  win_len: 0.025
-  hop_length: 0.01
-  sr: 16000
   n_mels: 80
   encoder_dim: 144  # 和linear_dim保持一致
-  t_mask_prob:  0.05  # 时域mask概率
-  f_mask: 27
-  mask_times: 2  # mask次数
   dim_head: 64  # att head 维度
   last_dim_head: 32
   heads: 4  # att head数
@@ -57,6 +51,16 @@ module:
 
 data:
   source: xf_asr
+  feature:
+    type: mel  # wav, mel 特征类型
+    pad: 16
+    win_length: 0.025
+    t_mask: 0.05
+    f_mask: 12
+    mask_times: 1  # 2
+    speed_shift: true
+    pitch_shift: false
+    reverb: true
   dataloader_params:
     pin_memory: true
     num_workers: 8
@@ -66,39 +70,39 @@ data:
     test_batch_sampler: null
   langs:
     -
-      train_manifest: /home/cc/workdir/code/lid/data/xf2/data/train/Persian/train7k.label
-      # train_manifest: /home/cc/workdir/code/lid/data/xf/data/Persian/dev1.label
-      val_manifest: /home/cc/workdir/code/lid/data/xf2/data/train/Persian/dev100.label
-      test_manifest: /home/cc/workdir/code/lid/data/xf2/data/train/Persian/dev100.label
+      train_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian/train9.label
+      # train_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian/dev1.label
+      val_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian/dev1.label
+      test_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian/dev1.label
       lang: Persian
       id: 0
-      vocab: /home/cc/workdir/code/lid/data/xf2/data/Persian-vocab.txt
+      vocab: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian-vocab.txt
     -
-      # train_manifest: /home/cc/workdir/code/lid/data/xf/data/Swahili/dev1.label  # 6394
-      train_manifest: /home/cc/workdir/code/lid/data/xf2/data/train/Swahili/train63.label
+      # train_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili/dev1.label  # 6394
+      train_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili/train9.label
       # val_manifest: /home/cc/workdir/data/common-voice/cv-corpus-9.0-2022-04-27/zh-TW/dev.tsv  # 4619
-      val_manifest: /home/cc/workdir/code/lid/data/xf2/data/train/Swahili/dev100.label
-      test_manifest: /home/cc/workdir/code/lid/data/xf2/data/train/Swahili/dev100.label
+      val_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili/dev1.label
+      test_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili/dev1.label
       lang: Swahili
       id: 1
-      vocab: /home/cc/workdir/code/lid/data/xf2/data/Swahili-vocab.txt
+      vocab: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili-vocab.txt
     -
-      # train_manifest: /home/cc/workdir/code/lid/data/xf/data/Vietnamese/dev1.label
-      train_manifest: /home/cc/workdir/code/lid/data/xf2/data/train/Vietnamese/train67.label
-      val_manifest: /home/cc/workdir/code/lid/data/xf2/data/train/Vietnamese/dev100.label
-      test_manifest: /home/cc/workdir/code/lid/data/xf2/data/train/Vietnamese/dev100.label
+      # train_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese/dev1.label
+      train_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese/train9.label
+      val_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese/dev1.label
+      test_manifest: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese/dev1.label
       lang: Vietnamese
       id: 2
-      vocab: /home/cc/workdir/code/lid/data/xf2/data/Vietnamese-vocab.txt
+      vocab: /hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese-vocab.txt
 
   sampler_common:
-    train_batch_size: 4
+    train_batch_size: 16
     val_batch_size: 4
     test_batch_size: 1
   max_duration: 12
 
 trainer:
-  total_epoch: 40
+  total_epoch: 100
   gpu_id: 0
   local_rank: 0
   world_size: 1
@@ -122,5 +126,10 @@ logger:
     entity: kouyt5
     name: *model_name
     wandb_id: null
+  comet:
+    api_key: dUu2j8mesSyoVrjuV5ZnkFVNV
+    project: xf_asr_zero
+    entity: kouyt5
+    name: *model_name
 
 stage: train  # test, train

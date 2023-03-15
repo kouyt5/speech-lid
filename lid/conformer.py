@@ -411,7 +411,7 @@ class ConformerModel(nn.Module):
         double_swish=False,
         sub_sampling: int = 2,
         stochastic_depth_p: float = 0.7,
-        use_stochastic_depth: bool = False,
+        use_stochastic_depth: bool = True,
     ) -> None:
         super().__init__()
         self.n_blocks = n_blocks
@@ -449,7 +449,7 @@ class ConformerModel(nn.Module):
         """    
         # x = self.sub_sampling(x.transpose(1, 2)).transpose(1, 2)  # (N, T, C) -> (N, T', C)
         x = self.sub_sampling(x)
-        x, _ = self.pos(x)
+        x, _ = self.pos(x)  # 这里犯了个错，相对位置编码其实不需要，但不影响
         # x = self.linear(x)
         for i in range(len(self.encoders)):
             x = self._layer_dropout(self.encoders[i], x, i)

@@ -120,7 +120,11 @@ logger:
     entity: kouyt5
     name: *model_name
     wandb_id: null
-
+  comet:
+    api_key: dUu2j8mesSyoVrjuV5ZnkFVNV
+    project: xf_lid
+    entity: kouyt5
+    name: *model_name
 stage: train  # test, train
 
 # python main_cross.py --config-name xf_asr_lid trainer.total_epoch=100 model.last_model_name=xvector module.optimizer_name=sgd +module.optimizer_param.momentum=0.9 data.feature.pitch_shift=true data.dataloader_params.train_batch_size=32 module.optimizer_param.lr=0.01

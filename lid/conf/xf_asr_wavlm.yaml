@@ -116,5 +116,10 @@ logger:
     entity: kouyt5
     name: *model_name
     wandb_id: null
+  comet:
+    api_key: dUu2j8mesSyoVrjuV5ZnkFVNV
+    project: xf_asr_zero
+    entity: kouyt5
+    name: *model_name
 
 stage: train  # test, train

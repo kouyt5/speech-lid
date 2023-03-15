@@ -11,14 +11,16 @@ from ccml.callbacks.profile_callback import ProfileCallback
 from ccml import seed_everything
 from ccml.trainer import Trainer
 from lid.LidModule_ASR import LidModule
+from lid.LidModule_ASR_Supervised import LidSuperviseModule
 from lid.raw_datasets import MergedDataset, MutiBatchSampler
 from lid.tokenizer import CTCTokenizer
 import hydra
 from omegaconf import DictConfig
 from ccml.loggers.wandb_logger import WandbLogger
+from ccml.loggers.comet_logger import CometLogger
 
 
-@hydra.main(config_path="conf", config_name="xf_asr_extra")
+@hydra.main(config_path="conf", config_name="xf_asr_lid")
 def main(cfg: DictConfig) -> None:
     logging.info("python "+ " ".join(sys.argv))
     """
@@ -33,6 +35,7 @@ def main(cfg: DictConfig) -> None:
     # 数据加载参数
     data_conf = cfg["data"]
     wandb_conf = cfg["logger"]["wandb"]
+    comet_conf = cfg["logger"]["comet"]
     supervised = cfg["supervised"]
 
     seed_everything(0)  # 随机数种子
@@ -65,6 +68,10 @@ def main(cfg: DictConfig) -> None:
     model_agent = None
     if supervised:
         logging.info("使用监督损失模型")
+        model_agent = LidSuperviseModule(**module_conf, **model_conf,
+                                lang2vocab=lang2vocablen_dict,
+                                lang2index_dict=lang2index_dict,
+                                tokenizer_dict=lang2tokenizer_dict)  # 模型训练封装
     else:
         logging.info("使用无监督预训练模型")
         model_agent = LidModule(**module_conf, **model_conf,
@@ -119,9 +126,10 @@ def main(cfg: DictConfig) -> None:
     dataloader_params["train_batch_sampler"] = train_batch_sample
     dataloader_params["val_batch_sampler"] = val_batch_sample
     dataloader_params["test_batch_sampler"] = test_batch_sample
-    wandb_logger = WandbLogger(**wandb_conf)  # 在线日志记录回调
+    # wandb_logger = WandbLogger(**wandb_conf)  # 在线日志记录回调
+    comet_logger = CometLogger(**comet_conf)
     trainer = Trainer(
-        callbacks=[ckpt_callback, lr_callback, profile_callback], loggers=[wandb_logger], **train_conf
+        callbacks=[ckpt_callback, lr_callback, profile_callback], loggers=[comet_logger], **train_conf
     )  # 训练器
     if cfg["stage"] == "train":
         trainer.fit(

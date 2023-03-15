@@ -1,3 +1,4 @@
 data/
 *.pt
 *.out
+results/*

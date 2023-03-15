@@ -7,6 +7,8 @@ from ccml.ccml_module import CCMLModule
 from ccml.optim.novograd import Novograd
 from ccml.optim.tri_state import TriStageLRSchedule
 from lid.ConformerLangModel import ConformerMutiLangModel
+from lid.audio_processor import read_audio, wav2mel
+from lid.eer import EER2, CAvg
 
 
 class LidSuperviseModule(CCMLModule):
@@ -28,14 +30,9 @@ class LidSuperviseModule(CCMLModule):
         dropout: float = 0.0,  # 最后的线性映射层dropout
         linear_dim: int = 144,  # 最后线性层输入维度
         n_blocks: int = 14,
-        win_len=0.025,
-        hop_length: float = 0.01,
         sr=16000,
         n_mels: int = 80,
         encoder_dim: int = 144,  # 和linear_dim保持一致
-        t_mask_prob: float = 0.05,  # 时域mask概率
-        f_mask=27,
-        mask_times: int = 2,  # mask次数
         dim_head=64,  # att head 维度
         last_dim_head:int=32,  # 最后层的head维度
         heads=4,  # att head数
@@ -54,15 +51,11 @@ class LidSuperviseModule(CCMLModule):
             lang2vocab=lang2vocab,
             lang2index_dict=lang2index_dict,
             tokenizer_dict=tokenizer_dict,
-        
             num_layers=num_layers,
             hidden_dim=hidden_dim,  # 语种识别隐藏层
             conformer_linear = conformer_linear,
             linear_dim = linear_dim,  # 最后线性层输入维度
             n_blocks = n_blocks,  # Conformer 模型参数
-            win_len= win_len,
-            hop_length = hop_length,
-            sr=sr,
             n_mels = n_mels,
             encoder_dim = encoder_dim,
             dim_head=dim_head,
@@ -100,14 +93,8 @@ class LidSuperviseModule(CCMLModule):
             dropout = dropout,  # 最后的线性映射层dropout
             linear_dim = linear_dim,  # 最后线性层输入维度
             n_blocks = n_blocks,  # Conformer 模型参数
-            win_len= win_len,
-            hop_length = hop_length,
-            sr=sr,
             n_mels = n_mels,
             encoder_dim = encoder_dim,
-            t_mask_prob = t_mask_prob,
-            f_mask=f_mask,
-            mask_times = mask_times,
             dim_head=dim_head,
             last_dim_head=last_dim_head,
             heads=heads,
@@ -126,6 +113,8 @@ class LidSuperviseModule(CCMLModule):
         self.count = 1
         self.avg_loss = 0
         self.avg_wer = 0
+        self.eer = EER2()
+        self.cavg = CAvg(num_class=len(self.lang2index_dict.keys()))
 
     def config_optim(
         self, *args, **kwargs
@@ -213,9 +202,22 @@ class LidSuperviseModule(CCMLModule):
             lid.append(tmp)
         return lid
 
-    def infer(self, x: torch.Tensor, sample_rate: int = 22050, language: str = None):
+    def infer(self, x: str, language: str = None, device=torch.device("cpu")):
+        x, sr = read_audio(x)
+        x = wav2mel(
+                x,
+                use_kaildi=False,
+                win_length=0.025,
+                hop_length=0.01,
+                n_mels=80,
+                n_fft=512,
+                pad=0,
+                sr=sr,
+            )
+        x = x.transpose(1,2).to(device)  # -> (1, T, n_mel)
+        
         out, (lid_asr, lid_linear) = self.model(
-            [x[0,:]], sample_rate, language
+            x, sr, language
         )  # {"cn": (1, T, V)}, (1 * C)
         predict_texts = {}
         for lang in out.keys():
@@ -224,9 +226,32 @@ class LidSuperviseModule(CCMLModule):
             )
         return predict_texts, lid_asr, out
 
+    def infer_tensor(self, x: str, sr:int, language: str = None, device=torch.device("cpu")):
+        x = wav2mel(
+                x,
+                use_kaildi=False,
+                win_length=0.025,
+                hop_length=0.01,
+                n_mels=80,
+                n_fft=512,
+                pad=0,
+                sr=sr,
+            )
+        x = x.transpose(1,2).to(device)  # -> (1, T, n_mel)
+        
+        out, (lid_asr, lid_linear) = self.model(
+            x, sr, language
+        )  # {"cn": (1, T, V)}, (1 * C)
+        predict_texts = {}
+        for lang in out.keys():
+            predict_texts[lang] = self.tokenizer_dict[lang].ctc_decode(
+                torch.argmax(out[lang], dim=-1),
+            )
+        return predict_texts, lid_asr, out
+    
     def train_loop(self, batch):
         # out.keys(): "loss" "wer" "lang" "predict_texts" "label_texts" lid_acc
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         out = self.common_loop(batch)
         if self.trainer.current_step % self.interval == self.interval - 1:
             logging.info("wer: " + str(out["wer"]))
@@ -256,18 +281,7 @@ class LidSuperviseModule(CCMLModule):
         self.avg_loss = 0
         self.avg_wer = 0
         epoch = self.trainer.current_epoch
-        if epoch <= self.freeze_encoder_epoch:
-            self.model.freeze_feature_extractor()
-            logging.info("freeze encoder")
-        else:
-            self.model.unfreeze_feature_extractor()
-            logging.info("unfreeze encoder")
-        if epoch <= self.freeze_tranformer_epoch:
-            self.model.freeze_tranformer_encoder()
-            logging.info("freeze tranformer")
-        else:
-            self.model.unfreeze_tranformer_encoder()
-            logging.info("unfreeze tranformer")
+
 
     def train_loop_end(self, outputs: List[Any] = None):
         self.count = 1
@@ -294,8 +308,17 @@ class LidSuperviseModule(CCMLModule):
 
     def val_loop(self, batch):
         # out.keys(): "wer" "lang" "predict_texts" "label_texts"
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         out = self.common_loop(batch)
+        wav_paths = batch[4]
+        for i in range(len(batch[4])):
+            inter_out = self.infer(wav_paths[i], device=self.trainer.device)
+            prob = inter_out[1].squeeze(0).detach().cpu().numpy().tolist()
+            prob = [(-1/(item-1e-9)) for item in prob]
+            prob = [item/sum(prob) for item in prob]
+            self.eer.update([prob], [batch[5][i].item()])
+            self.cavg.update([prob], [batch[5][i].item()])
+            
         if self.count % self.interval == self.interval - 1:
             logging.info("wer: " + str(out["wer"]))
             logging.info(f"predict_text: {out['predict_texts'][0]}")
@@ -333,11 +356,18 @@ class LidSuperviseModule(CCMLModule):
             total_val_loss += item["val_loss"]
 
         total_wer = self.model.model.wer_fn(all_predict_texts, all_label_texts)
+        total_eer = self.eer.compute()
+        total_cavg = self.cavg.compute()
+        
+        self.eer.reset()
+        self.cavg.reset()
         self.trainer.logger.log(
             data={
                 "val_loss": total_val_loss / len(outputs),
                 "val_wer": total_wer,
                 "epoch": self.trainer.current_epoch,
+                "eer": total_eer,
+                "cavg": total_cavg,
             },
             progress=True,
             stage="val",
@@ -346,5 +376,8 @@ class LidSuperviseModule(CCMLModule):
         )
         logging.info(
             f"val_wer={total_wer}, val_avg_loss={total_val_loss / len(outputs)}"
+        )
+        logging.info(
+            f"epoch: {self.trainer.current_epoch}, val_eer: {total_eer}, val_cavg: {total_cavg}"
         )
         self.trainer.logger.remove_key(["loss", "wer", "_runtime", "_timestamp"])

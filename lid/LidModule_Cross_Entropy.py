@@ -40,6 +40,7 @@ class LidModuleCross(CCMLModule):
         mask_prob: float = 0.0,
         sr: int = 22050,
         supervised: bool = False,
+        pre_train_name:str = "wav2vec",
         *args,
         **kwargs,
     ):
@@ -53,6 +54,7 @@ class LidModuleCross(CCMLModule):
             mask_prob=mask_prob,
             last_model_name=last_model_name,
             supervised=supervised,
+            pre_train_name=pre_train_name
         )
         self.optimizer_name = optimizer_name
         self.optimizer_param = optimizer_param
@@ -88,6 +90,7 @@ class LidModuleCross(CCMLModule):
                 mask_channel_prob=mask_channel_prob,
                 mask_prob=mask_prob,
                 last_model_name=last_model_name,
+                pre_train_name=pre_train_name,
             )
         self.count = 1
         self.avg_loss = 0

@@ -8,15 +8,21 @@ import torch
 import torchmetrics
 import torchaudio
 import kenlm
+import time
 sys.path.append("..")
 sys.path.append("./code/")
 
+from lid.eer import EER2, CAvg
 from lid.lm_decoder import BeamSearchDecoderWithLM
 from lid.LidModule_ASR import LidModule
 import logging
 
 KENLM_THRESHOLD = 0.012 * 1
 
+SNR = 0
+ENHANCE_FACTOR=0.3
+
+NOISE = "factor1"
 
 class XFResult:
     def __init__(
@@ -33,12 +39,14 @@ class XFResult:
         per_lm_decoder: BeamSearchDecoderWithLM = None,
         swa_lm_decoder: BeamSearchDecoderWithLM = None,
         vie_lm_decoder: BeamSearchDecoderWithLM = None,
+        use_lm: bool = False,
     ) -> None:
 
         if not os.path.exists(folder):
             logging.error(f"{folder} 不存在")
             exit()
         self.folder = folder
+        self.use_lm = use_lm
         self.model = LidModule.resume_from_checkpoint(
             ckpt_path, map_location=map_location, pt_path=base_pt_path
         )
@@ -53,57 +61,144 @@ class XFResult:
         self.per_lm_decoder = per_lm_decoder
         self.swa_lm_decoder = swa_lm_decoder
         self.vie_lm_decoder = vie_lm_decoder
-
-    @torch.no_grad()
-    def predict_audio(self, audio_path: str, lang: str = None):
-        wav, sr = torchaudio.load(audio_path)
-        wav = self.normalize_wav(wav).to(self.device)
-        pre_lang = lang
-        if lang is None:
-            out = self.model.infer(wav, sr)
-            index = torch.argmax(out[1], dim=-1)
-            prob = out[1].squeeze(0).detach().cpu().numpy().tolist()
-            index = index[0].item()
-            # 如果区分度不明显，使用语言模型区分
-            if (
-                prob[index] - prob[index - 1] < KENLM_THRESHOLD
-                and prob[index] - prob[index - 1] > -KENLM_THRESHOLD
-            ) or (
-                prob[index] - prob[index - 2] < KENLM_THRESHOLD
-                and prob[index] - prob[index - 2] > -KENLM_THRESHOLD
-            ):
-                pre_text, pre_lang = self.lm_select(
-                    out[0]["Persian"][0], out[0]["Swahili"][0], out[0]["Vietnamese"][0]
-                )
-            else:
-                pre_lang = self.langs[index]
-                pre_text = out[0][pre_lang][0]
-        else:
-            out = self.model.infer(wav, sr, lang)
-            pre_text = out[0][lang][0]
-
-        # lm
+        self.eer = EER2()
+        self.cavg = CAvg(num_class=len(self.model.lang2index_dict.keys()))
+        self.noises = {}
+        
+    def _need_lm(self, prob:List[float], index:int):
+        result = False
+        i = 1
+        while (i<len(prob)):
+            curr_ok = prob[index] - prob[index - i] < KENLM_THRESHOLD \
+                and prob[index] - prob[index - i] > -KENLM_THRESHOLD
+            result = curr_ok or result
+            i += 1
+        return result
+    
+    def __lm_select(self, pre_lang, out):
         lm_predict_texts = []
         if pre_lang == "Persian" and self.per_lm_decoder is not None:
             lm_predict_texts = self.per_lm_decoder.forward(
                 torch.softmax(out[2][pre_lang], dim=-1).detach().cpu().numpy(),
                 [out[2][pre_lang][0].size(0)],
             )
-            return lm_predict_texts[0], pre_lang, out
         if pre_lang == "Swahili" and self.swa_lm_decoder is not None:
             lm_predict_texts = self.swa_lm_decoder.forward(
                 torch.softmax(out[2][pre_lang], dim=-1).detach().cpu().numpy(),
                 [out[2][pre_lang][0].size(0)],
             )
-            return lm_predict_texts[0], pre_lang, out
         if pre_lang == "Vietnamese" and self.vie_lm_decoder is not None:
             lm_predict_texts = self.vie_lm_decoder.forward(
                 torch.softmax(out[2][pre_lang], dim=-1).detach().cpu().numpy(),
                 [out[2][pre_lang][0].size(0)],
             )
-            return lm_predict_texts[0], pre_lang, out
-        return pre_text, pre_lang, out
+        return lm_predict_texts[0], pre_lang
+    
+    @torch.no_grad()
+    def predict_audio(self, audio_path: str, lang: str = None):
+        wav, sr = torchaudio.load(audio_path)
+        if SNR < 50:  # 50以下的snr才有测试的必要
+            wav = self.add_noise(wav, sr, SNR, NOISE)
+        if ENHANCE_FACTOR != 1:
+            enhance = self.enhance(wav)
+            wav = (1 - ENHANCE_FACTOR) * enhance + ENHANCE_FACTOR * wav
+        wav = self.normalize_wav(wav).to(self.device)
+        pre_lang = lang
+        final_prob = []
+        origin_prob = []
+        if lang is None:
+            out = self.model.infer(wav, sr)
+            index = torch.argmax(out[1], dim=-1)
+            prob = out[1].squeeze(0).detach().cpu().numpy().tolist()
+            origin_prob = prob.copy()
+            index = index[0].item()
+            # 如果区分度不明显，使用语言模型区分
+            if self._need_lm(prob, index):
+                pre_text, pre_lang, lm_prob = self.lm_select(
+                    out[0]["Persian"][0], out[0]["Swahili"][0], out[0]["Vietnamese"][0]
+                )
+                final_prob = lm_prob
+            else:
+                pre_lang = self.langs[index]
+                pre_text = out[0][pre_lang][0]
+                prob = [(-1/(item-1e-9)) for item in prob]
+                prob = [item/sum(prob) for item in prob]
+                final_prob = prob
+        else:
+            out = self.model.infer(wav, sr, lang)
+            pre_text = out[0][lang][0]
 
+        # 语言模型解码ASR
+        if self.use_lm:
+            lm_predict_texts, pre_lang = self.__lm_select(pre_lang, out)
+            return lm_predict_texts, pre_lang, final_prob, origin_prob
+        return pre_text, pre_lang, final_prob, origin_prob
+    
+    def _get_noise(self, noise_type, target_sr):
+        if noise_type == "white":
+            if noise_type in self.noises.keys():
+                noise, noise_sr = self.noises[noise_type]
+            else:
+                noise, noise_sr = torchaudio.load("noise/white.wav")
+                noise = torchaudio.functional.resample(noise, noise_sr, target_sr)
+                self.noises[noise_type] = noise, noise_sr
+        if noise_type == "factory1":
+            if noise_type in self.noises.keys():
+                noise, noise_sr = self.noises[noise_type]
+            else:
+                noise, noise_sr = torchaudio.load("noise/factory1.wav")
+                noise = torchaudio.functional.resample(noise, noise_sr, target_sr)
+                self.noises[noise_type] = noise, noise_sr
+        if noise_type == "factory2":
+            if noise_type in self.noises.keys():
+                noise, noise_sr = self.noises[noise_type]
+            else:
+                noise, noise_sr = torchaudio.load("noise/factory2.wav")
+                noise = torchaudio.functional.resample(noise, noise_sr, target_sr)
+                self.noises[noise_type] = noise, noise_sr
+        if noise_type == "babble":
+            if noise_type in self.noises.keys():
+                noise, noise_sr = self.noises[noise_type]
+            else:
+                noise, noise_sr = torchaudio.load("noise/babble.wav")
+                noise = torchaudio.functional.resample(noise, noise_sr, target_sr)
+                self.noises[noise_type] = noise, noise_sr
+        return noise
+    
+    def add_noise(self, clean, sr, snr:int = 0, noise_type:str = "white"):
+        import random
+        noise = self._get_noise(noise_type, sr)
+        if noise.shape[1] < clean.shape[1] * 3:
+            noise = noise.repeat((1, (int(len(clean) * 3 / len(noise)) - 1)))
+        start = random.randint(0, noise.shape[0] - clean.shape[0])
+        noise_b = noise[:, start:start+clean.shape[1]]
+        sum_clean = torch.sum(clean ** 2)
+        sum_noise = torch.sum(noise_b ** 2)
+
+        x = torch.sqrt(sum_clean / (sum_noise * pow(10, snr / 10.0)))
+        noise_c = x * noise_b
+        noisy = clean + noise_c
+        # torchaudio.save("/hdd/1/chenc/lid/speech-lid/lid/results/test.wav", noisy, sr)
+        return noisy
+    
+    def enhance(self, x:torch.Tensor):
+        import soundfile as sf
+        import io, requests
+        
+        to_send = io.BytesIO()
+        sf.write(to_send, x.squeeze(0).numpy(), 16000, format="WAV")
+        to_send.seek(0)
+        res = requests.post("http://127.0.0.1:8080/se", 
+              files={"file": to_send})
+        clean_io = io.BytesIO(res.content)
+        clean_io.seek(0)
+        enhance, sr = torchaudio.load(clean_io)
+        # torchaudio.save("/hdd/1/chenc/lid/speech-lid/lid/results/enhance.wav", enhance, sr)
+        return enhance
+        
+
+    
+    
     def lm_select(self, persian_text, swahili_text, vietnamese_text):
         """使用语言模型判断内容语种归属
 
@@ -113,12 +208,16 @@ class XFResult:
         per_score = self.per_lm.perplexity(persian_text)
         swa_score = self.swa_lm.perplexity(swahili_text)
         vie_score = self.vie_lm.perplexity(vietnamese_text)
+        total_score = 1/per_score + 1/swa_score + 1/vie_score
+        prob_per = (1/per_score) / total_score
+        prob_swa = (1/swa_score) / total_score
+        prob_vie = (1/vie_score) / total_score
         if per_score <= swa_score and per_score <= vie_score:
-            return persian_text, "Persian"
+            return persian_text, "Persian", [prob_per, prob_swa, prob_vie]
         if swa_score <= per_score and swa_score <= vie_score:
-            return swahili_text, "Swahili"
+            return swahili_text, "Swahili", [prob_per, prob_swa, prob_vie]
         if vie_score <= per_score and vie_score <= swa_score:
-            return vietnamese_text, "Vietnamese"
+            return vietnamese_text, "Vietnamese", [prob_per, prob_swa, prob_vie]
 
     def process(self, lang: str = None):
         results = []
@@ -132,7 +231,7 @@ class XFResult:
             wavs = os.listdir(wav_folder)
             for wav_name in tqdm(wavs, total=len(wavs)):
                 audio_path = os.path.join(wav_folder, wav_name)
-                pre_text, pre_lang, out = self.predict_audio(
+                pre_text, pre_lang, out,_ = self.predict_audio(
                     audio_path, lang if self.lang_bind else None
                 )
                 if pre_lang == lang:
@@ -196,22 +295,33 @@ class XFResult:
         ground_trues = []
         pre_texts = []
         probs = []
+        origin_probs = []
         total = 0
         corr = 0
-
+        total_time = 0
         dataset = self._get_dataset_xf(manifest_path)
         for data in tqdm(dataset, total=len(dataset)):
-            pre_text, pre_lang, out = self.predict_audio(data["path"], lang=lang)
+            pre_time = time.time()
+            pre_text, pre_lang, prob, origin_prob = self.predict_audio(data["path"], lang=None)
+            total_time += (time.time() - pre_time)
             ground_trues.append(data["sentence"])
             pre_texts.append(pre_text)
             if pre_lang == data["locale"]:
                 corr += 1
             total += 1
-            # probs.append(out[1].squeeze(0).detach().cpu().numpy().tolist()) 
+            # prob = torch.softmax(torch.FloatTensor(prob), dim = -1).tolist()
+            # print(prob)
+            # prob = [-1/item for item in prob]
+            # prob = [item/sum(prob) for item in prob]
+            # print(prob)
+            self.eer.update([prob], [self.model.lang2index_dict[data["locale"]]])
+            self.cavg.update([prob], [self.model.lang2index_dict[data["locale"]]])
+            probs.append(prob)
+            origin_probs.append(origin_prob)
         wer_fn = torchmetrics.CharErrorRate()
         wer_fn2 = torchmetrics.WordErrorRate()
-        # self.write_to_csv(ground_trues, pre_texts, probs, lang=lang)
-        print(f"语种识别精度: {corr/total}, {corr}/{total}")
+        self.write_to_csv(ground_trues, pre_texts, origin_probs, lang=lang)
+        print(f"{lang}语种识别精度: {corr/total}, {corr}/{total}, avg time: {total_time/len(dataset)}")
         cer = wer_fn(ground_trues, pre_texts).item()
         wer = wer_fn2(ground_trues, pre_texts).item()
         print(f"cer: {cer}, wer: {wer}")
@@ -246,10 +356,21 @@ if __name__ == "__main__":
     parse.add_argument("--beam_width", type=int, default=1000)
     parse.add_argument("--base_path", type=str, default="/hdd/1/chenc/lid/speech-lid/lid/data/xf/")
     parse.add_argument("--test_path", type=str, default="/workspace/xfdata/data/")
-    parse.add_argument("--pt_path", type=str, default="/hdd/1/chenc/lid/speech-lid/lid/outputs/2022-09-11/16-14-limit_Wav2vec_Large_lr_0.0001_dr_0.1_bs_4_conform_False/ckpt/last.pt")
-    parse.add_argument("--base_pt_path", type=str, default="wavlm/ckpts/WavLM-Base-plus.pt")
+    parse.add_argument("--pt_path", type=str, default="/hdd/1/chenc/lid/speech-lid/lid/outputs/2022-12-09/17-30-limit_WavLMBase_lr_0.0001_dr_0.1_mask_0.15_cmask_0.15_bs_4_conform_True/ckpt/last.pt")
+    parse.add_argument("--base_pt_path", type=str, default="/hdd/1/chenc/lid/speech-lid/lid/wavlm/ckpts/WavLM-Base-plus.pt")
+    parse.add_argument("--snr", type=float, default=20)
+    parse.add_argument("--factor", type=float, default=1)
+    parse.add_argument("--kenlm_factor", type=int, default=0.012 * 1)
+    parse.add_argument("--noise", type=str, default="factory1")
+    parse.add_argument("--test_range", type=str, default="xf",help="xf, all")
     arg = parse.parse_args()
     
+    SNR = arg.snr
+    ENHANCE_FACTOR = arg.factor
+    KENLM_THRESHOLD = arg.kenlm_factor
+    NOISE = arg.noise  # white factor1 factor2 babble
+    
+    print(f"snr {SNR}, factor: {ENHANCE_FACTOR}, kenlm_factor:{KENLM_THRESHOLD}, noise:{NOISE}")
     base_path = arg.base_path
     # final 0.9166
     ckpt_path = arg.pt_path
@@ -277,6 +398,9 @@ if __name__ == "__main__":
     sw_lm_path = base_path + "lm/swa_train9lm3.arpa"
     vi_lm_path = base_path + "lm/vie_train9lm3.arpa"
     
+    pe_lm_path = "/hdd/1/chenc/lid/speech-lid/lid/data/xf/lm/github/all/v5" + "/outv5pe3gram.arpa"
+    sw_lm_path = "/hdd/1/chenc/lid/speech-lid/lid/data/xf/lm/github/all/v3/outv3sw3gram.arpa"
+    vi_lm_path = "/hdd/1/chenc/lid/speech-lid/lid/data/xf/lm/github/all/v5/outv5vi3gram.arpa"
     # lm 提升 wenet greedy12.18 ->(wav2vec lstm)0.1215 -> 0.1167(wavlm conformer)
     # -> 0.1066(train) -> (train+cv) 0.0994 -> 0.921 (train+cv+other)
     beam_width = arg.beam_width
@@ -317,7 +441,7 @@ if __name__ == "__main__":
         ckpt_path=ckpt_path,
         base_pt_path=arg.base_pt_path,  # "wavlm/ckpts/WavLM-Large.pt"
         folder=arg.base_path + "data/",  # test集文件夹，解压后的文件夹，下面分别是 Persian, Swahili, Vietnamese三个文件夹
-        result_file="/tmp/result.csv",
+        result_file="/hdd/1/chenc/lid/speech-lid/result.csv",
         map_location="cuda:0",
         persian_lm_path=pe_lm_path,
         swahili_lm_path=sw_lm_path,
@@ -330,43 +454,57 @@ if __name__ == "__main__":
     all_ground_trues = []
     all_pre_texts = []
     cer, ground_trues, pre_texts = module.test_val(
-        base_path + "data/Persian/dev1.label"#, lang="Persian"
+        base_path + "data/Persian/dev1.label", lang="Persian"
     )
     all_ground_trues.extend(ground_trues)
     all_pre_texts.extend(pre_texts)
     cer, ground_trues, pre_texts = module.test_val(
-        base_path + "data/Swahili/dev1.label"#, lang="Swahili"
+        base_path + "data/Swahili/dev1.label", lang="Swahili"
     )
     all_ground_trues.extend(ground_trues)
     all_pre_texts.extend(pre_texts)
     cer, ground_trues, pre_texts = module.test_val(
-        base_path + "data/Vietnamese/dev1.label"#, lang="Vietnamese"
+        base_path + "data/Vietnamese/dev1.label", lang="Vietnamese"
     )
     all_ground_trues.extend(ground_trues)
     all_pre_texts.extend(pre_texts)
     cer = torchmetrics.CharErrorRate()(all_ground_trues, all_pre_texts)
     wer = torchmetrics.WordErrorRate()(all_ground_trues, all_pre_texts)
     print(f"total cer: {cer}, total wer: {wer}")
-    # common voice
-    all_ground_trues.clear()
-    all_pre_texts.clear()
-    cer, ground_trues, pre_texts = module.test_val(
-        "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian/cv_test.label"
-    )
-    all_ground_trues.extend(ground_trues)
-    all_pre_texts.extend(pre_texts)
-    cer, ground_trues, pre_texts = module.test_val(
-        "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili/cv_test.label"
-    )
-    all_ground_trues.extend(ground_trues)
-    all_pre_texts.extend(pre_texts)
-    cer, ground_trues, pre_texts = module.test_val(
-        "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese/cv_test.label"
-    )
-    all_ground_trues.extend(ground_trues)
-    all_pre_texts.extend(pre_texts)
-    cer = torchmetrics.CharErrorRate()(all_ground_trues, all_pre_texts)
-    wer = torchmetrics.WordErrorRate()(all_ground_trues, all_pre_texts)
-    print(f"total cer: {cer}, total wer: {wer}")
+    print("--------------------------------------")
+    print(f"eer: {module.eer.compute()}")
+    print(f"cavg: {module.cavg.compute()}")
+    print("--------------------------------------")
+    module.eer.reset()
+    module.cavg.reset()
+    print("\n")
+    if arg.test_range == "all":
+        # common voice
+        all_ground_trues.clear()
+        all_pre_texts.clear()
+        cer, ground_trues, pre_texts = module.test_val(
+            "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Persian/cv_test.label", "Persian"
+        )
+        all_ground_trues.extend(ground_trues)
+        all_pre_texts.extend(pre_texts)
+        cer, ground_trues, pre_texts = module.test_val(
+            "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Swahili/cv_test.label", "Swahili"
+        )
+        all_ground_trues.extend(ground_trues)
+        all_pre_texts.extend(pre_texts)
+        cer, ground_trues, pre_texts = module.test_val(
+            "/hdd/1/chenc/lid/speech-lid/lid/data/xf/data/Vietnamese/cv_test.label", "Vietnamese"
+        )
+        all_ground_trues.extend(ground_trues)
+        all_pre_texts.extend(pre_texts)
+        cer = torchmetrics.CharErrorRate()(all_ground_trues, all_pre_texts)
+        wer = torchmetrics.WordErrorRate()(all_ground_trues, all_pre_texts)
+        print(f"common voice total cer: {cer}, total wer: {wer}")
+        print("--------------------------------------")
+        print(f"eer: {module.eer.compute()}")
+        print(f"cavg: {module.cavg.compute()}")
+        print("--------------------------------------")
+        module.eer.reset()
+        module.cavg.reset()
     # 生成结果
     # module.process()

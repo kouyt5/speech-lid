@@ -404,20 +404,29 @@ class LangDiscriminator(torch.nn.Module):
             torch.nn.ReLU(inplace=False),
             torch.nn.Linear(hidden_dim, self.classes, bias=True),
         )
-        self.acc = torchmetrics.Accuracy()
+        self.acc = torchmetrics.Accuracy(task="multiclass",num_classes=len(self.lang2vocab.keys()))
         self.cross_entropy = torch.nn.CrossEntropyLoss()
 
     def forward(self, x):
         tmp = x[list(x.keys())[0]]
         res_tensor = torch.zeros(size=(tmp.shape[0], self.classes), device=tmp.device)
+        res_tensor2 = torch.zeros(size=(tmp.shape[0], self.classes), device=tmp.device)
+        Nb_size = max([self.lang2vocab[key] for key in self.lang2vocab.keys()]) + 1
         for lang in x.keys():
+            vocab_size = self.lang2vocab[lang]
             max_value, argmax = torch.max(torch.log_softmax(x[lang], dim=-1), dim=-1)
-            mask = (argmax - self.lang2vocab[lang]).bool()
+            mask = (argmax - vocab_size).bool()
             len = mask.sum(dim=-1)
             avg_confidence = torch.sum(max_value.masked_fill(~mask, 0), dim=-1) / (
                 len * np.log(self.lang2vocab[lang]) + 1e-5
             )
+            avg_confidence2 = torch.sum(max_value.masked_fill(~mask, 0), dim=-1) / (len + 1e-5)
+            avg_confidence2 = torch.exp(avg_confidence2)
+            # 考虑到词典大小不同，对分数进行修正（二次函数拟合(1/Na,1/Nb),(1,1)）两点
+            avg_confidence2 = ((Nb_size - vocab_size - 1) / Nb_size) * torch.pow(avg_confidence2, 2) + \
+                ((1 + vocab_size) / Nb_size) * avg_confidence2
             res_tensor[:, self.lang2index[lang]] = avg_confidence
+            res_tensor2[:, self.lang2index[lang]] = avg_confidence2
         linear_discriminate = self.linear(res_tensor.detach())
         return res_tensor, linear_discriminate  # (B, C), (B, C)
 

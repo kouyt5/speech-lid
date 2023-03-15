@@ -6,7 +6,8 @@ import torch.nn.functional as F
 import torchaudio
 import torchvision
 from torch.nn.utils.rnn import pad_sequence
-
+from lid.s3prl_updream.wav2vec.wav2vec2_expert import UpstreamExpert
+from lid.s3prl_updream.interfaces import Featurizer
 from lid.wavlm.example import WavLMModel
 from lid.model.resnet import ResNet18
 from lid.model.xvector import XVEC
@@ -24,16 +25,26 @@ class PretrainLidModel(torch.nn.Module):
         mask_channel_prob: float = 0.0,
         mask_prob: float = 0.0,
         last_model_name: str = "xvector",  # 最后分类层名字, xvector, i-vector etc.
+        pre_train_name: str = "wavlm",
     ) -> None:
         super().__init__()
         self.data_processor = DataProcessor()
-        self.pre_train_model = WavLMMPretrainModel(
-            pt_path=pt_path,
-            use_pre_train=use_pre_train,
-            mask=mask,
-            mask_channel_prob=mask_channel_prob,
-            mask_prob=mask_prob,
-        )
+        if pre_train_name == "wavlm":
+            self.pre_train_model = WavLMMPretrainModel(
+                pt_path=pt_path,
+                use_pre_train=use_pre_train,
+                mask=mask,
+                mask_channel_prob=mask_channel_prob,
+                mask_prob=mask_prob,
+            )
+        else:
+            self.pre_train_model = Wav2vecPretrainModel(
+                pt_path=pt_path,
+                use_pre_train=use_pre_train,
+                mask=mask,
+                mask_channel_prob=mask_channel_prob,
+                mask_prob=mask_prob,
+            )
         logging.info(f"last model name: {last_model_name}")
         if last_model_name == "xvector":
             self.lang_discriminator = XVectorModel(linear_dim, num_class)
@@ -188,7 +199,7 @@ class DataProcessor(torch.nn.Module):
 
 class WavLMMPretrainModel(torch.nn.Module):
     """
-    wav2vec模型和额外线形层, 输出语音识别结果
+    wavlm模型和额外线形层, 输出语音识别结果
     """
 
     def __init__(
@@ -215,6 +226,38 @@ class WavLMMPretrainModel(torch.nn.Module):
             pad_mask[i, : batch[i].size(0)] = 0
         feature = self.featurizer(feature, pad_mask)
 
+        max_len = max(batch, key=lambda x: x.shape[0]).shape[0]
+        percents = [item.shape[0] / max_len for item in batch]
+        return feature, percents
+    
+class Wav2vecPretrainModel(torch.nn.Module):
+    """
+    wav2vec模型和额外线形层, 输出语音识别结果
+    """
+
+    def __init__(
+        self,
+        pt_path: str = None,
+        use_pre_train: bool = True,
+        mask: bool = True,
+        mask_channel_prob: float = 0.0,
+        mask_prob: float = 0.0,
+    ) -> None:
+        super().__init__()
+        logging.info(f"mask channel prob: {mask_channel_prob}, mask_prob {mask_prob}")
+        if not mask:
+            mask_channel_prob = 0.0
+            mask_prob = 0
+        self.featurizer = Featurizer(
+            upstream=UpstreamExpert(ckpt=pt_path, drop_layer=True, mask=mask),
+            feature_selection="last_hidden_state",  # last_hidden_state, hidden_state_{0-24}
+            upstream_device="cpu",
+            layer_selection=None,  # 选择后的第几层特征 0-24
+        )
+
+    def forward(self, batch):
+        feature = self.featurizer.upstream(batch)
+        feature = self.featurizer(batch, feature)
         max_len = max(batch, key=lambda x: x.shape[0]).shape[0]
         percents = [item.shape[0] / max_len for item in batch]
         return feature, percents

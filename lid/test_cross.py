@@ -1,6 +1,7 @@
 import argparse
 import csv
 import os, sys
+import time
 from typing import List
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
@@ -8,14 +9,19 @@ import torch
 import torchmetrics
 import torchaudio
 import kenlm
+import random
 
-from eer import EER2, EER
+from eer import EER, EER2, CAvg
 
 sys.path.append("..")
 sys.path.append("./code/")
 from lid.LidModule_Cross_Entropy import LidModuleCross
 import logging
 
+SNR = 0
+ENHANCE_FACTOR=0.3
+
+NOISE = "factory1"
 
 class MyResult:
     def __init__(
@@ -35,16 +41,84 @@ class MyResult:
         self.device = torch.device(map_location)
         self.result_file = result_file
         self.langs = ["Persian", "Swahili", "Vietnamese"]
-        self.scores = []
-        self.labels = []
+        self.eer = EER2()
+        self.cavg = CAvg(num_class=len(self.model.lang2index_dict.keys()))
+        
+        self.noises = {}
 
     @torch.no_grad()
     def predict_audio(self, audio_path: str):
         wav, sr = torchaudio.load(audio_path)
+        if SNR < 50:  # 50以下的snr才有测试的必要
+            wav = self.add_noise(wav, sr, SNR, NOISE)
+        if ENHANCE_FACTOR != 1:
+            enhance = self.enhance(wav)
+            wav = (1 - ENHANCE_FACTOR) * enhance + ENHANCE_FACTOR * wav
         wav = self.normalize_wav(wav).to(self.device)
         pre_lang, pre_score, pre_index = self.model.infer(wav, sr)
-        self.scores.append(pre_score)
-        return pre_lang
+        return pre_lang, pre_score
+
+    def add_noise(self, clean, sr, snr:int = 0, noise_type:str = "white"):
+        import random
+        noise = self._get_noise(noise_type, sr)
+        if noise.shape[1] < clean.shape[1] * 3:
+            noise = noise.repeat((1, (int(len(clean) * 3 / len(noise)) - 1)))
+        start = random.randint(0, noise.shape[0] - clean.shape[0])
+        noise_b = noise[:, start:start+clean.shape[1]]
+        sum_clean = torch.sum(clean ** 2)
+        sum_noise = torch.sum(noise_b ** 2)
+
+        x = torch.sqrt(sum_clean / (sum_noise * pow(10, snr / 10.0)))
+        noise_c = x * noise_b
+        noisy = clean + noise_c
+        # torchaudio.save("/hdd/1/chenc/lid/speech-lid/lid/results/test.wav", noisy, sr)
+        return noisy
+    
+    def _get_noise(self, noise_type, target_sr):
+        if noise_type == "white":
+            if noise_type in self.noises.keys():
+                noise, noise_sr = self.noises[noise_type]
+            else:
+                noise, noise_sr = torchaudio.load("/hdd/1/chenc/lid/speech-lid/lid/noise/white.wav")
+                noise = torchaudio.functional.resample(noise, noise_sr, target_sr)
+                self.noises[noise_type] = noise, noise_sr
+        if noise_type == "factory1":
+            if noise_type in self.noises.keys():
+                noise, noise_sr = self.noises[noise_type]
+            else:
+                noise, noise_sr = torchaudio.load("/hdd/1/chenc/lid/EHNet/dataset/noise92/factory1.wav")
+                noise = torchaudio.functional.resample(noise, noise_sr, target_sr)
+                self.noises[noise_type] = noise, noise_sr
+        if noise_type == "factory2":
+            if noise_type in self.noises.keys():
+                noise, noise_sr = self.noises[noise_type]
+            else:
+                noise, noise_sr = torchaudio.load("/hdd/1/chenc/lid/EHNet/dataset/noise92/factory2.wav")
+                noise = torchaudio.functional.resample(noise, noise_sr, target_sr)
+                self.noises[noise_type] = noise, noise_sr
+        if noise_type == "babble":
+            if noise_type in self.noises.keys():
+                noise, noise_sr = self.noises[noise_type]
+            else:
+                noise, noise_sr = torchaudio.load("/hdd/1/chenc/lid/EHNet/dataset/noise92/babble.wav")
+                noise = torchaudio.functional.resample(noise, noise_sr, target_sr)
+                self.noises[noise_type] = noise, noise_sr
+        return noise
+    
+    def enhance(self, x:torch.Tensor):
+        import soundfile as sf
+        import io, requests
+        
+        to_send = io.BytesIO()
+        sf.write(to_send, x.squeeze(0).numpy(), 16000, format="WAV")
+        to_send.seek(0)
+        res = requests.post("http://127.0.0.1:8080/se", 
+              files={"file": to_send})
+        clean_io = io.BytesIO(res.content)
+        clean_io.seek(0)
+        enhance, sr = torchaudio.load(clean_io)
+        # torchaudio.save("/hdd/1/chenc/lid/speech-lid/lid/results/enhance.wav", enhance, sr)
+        return enhance
 
     def process(self, lang: str = None):
         results = []
@@ -114,24 +188,24 @@ class MyResult:
             wav (torch.Tensor): (1, T)
         """
         std, mean = torch.std_mean(wav, dim=-1)
-        return torch.div(wav - mean, std + 1e-6)
+        return torch.div(wav - mean, std + 1e-9)  # 1e-6
 
     def test_val(self, manifest_path: str, lang: str = None):
         total = 0
         corr = 0
-
+        total_cost_time = 0
         dataset = self._get_dataset_xf(manifest_path)
         for data in tqdm(dataset, total=len(dataset)):
-            pre_lang = self.predict_audio(data["path"])
+            pre_time = time.time()
+            pre_lang, pre_score = self.predict_audio(data["path"])
+            total_cost_time += (time.time() - pre_time)
+            self.eer.update([pre_score], [self.model.getIndexByLangName(data["locale"])])
+            self.cavg.update([pre_score], [self.model.getIndexByLangName(data["locale"])])
             if pre_lang == data["locale"]:
                 corr += 1
             total += 1
-            self.labels.append(self.model.getIndexByLangName(data["locale"]))
-        print(f"语种识别精度: {corr/total}, {corr}/{total}")
+        print(f"语种识别精度: {corr/total}, {corr}/{total}, avg_time: {total_cost_time/len(dataset)}")
 
-    def clear(self):
-        self.labels.clear()
-        self.scores.clear()
         
     def _get_dataset_xf(self, manifest_path: str = None):
         datasets = []
@@ -164,12 +238,20 @@ if __name__ == "__main__":
     parse.add_argument(
         "--pt_path",
         type=str,
-        default="/hdd/1/chenc/lid/speech-lid/lid/outputs/2022-12-13/22-14-lid_lr_0.001_dr_0.1_bs_8_model_xvector/ckpt/last.pt",
+        default="/hdd/1/chenc/lid/speech-lid/lid/outputs/2023-02-06/01-35-lid_lr_0.001_adam_bs_8_model_resnet2_aug_speedTrue/ckpt/last.pt",
     )
     parse.add_argument(
         "--base_pt_path", type=str, default="/hdd/1/chenc/lid/speech-lid/lid/wavlm/ckpts/WavLM-Base-plus.pt"
     )
+    parse.add_argument("--snr", type=float, default=20)
+    parse.add_argument("--factor", type=float, default=1)
+    parse.add_argument("--noise", type=str, default="factory1")
+    parse.add_argument("--test_range", type=str, default="xf",help="xf, all")
     arg = parse.parse_args()
+    
+    SNR = arg.snr
+    ENHANCE_FACTOR = arg.factor
+    NOISE = arg.noise  # white factor1 factor2 babble
 
     base_path = arg.base_path
     # final 0.9166
@@ -188,27 +270,27 @@ if __name__ == "__main__":
     module.test_val(
         "/data/chenc/lid/xfdata/Vietnamese/dev1.label"
     )
-
-
-    eer_score = EER(num_class=len(module.scores[0]))(
-            module.scores, module.labels
-        )
-    print(f"eer: {eer_score}")
-    module.clear()
+    print("--------------------------------------")
+    print(f"eer2: {module.eer.compute()}")
+    print(f"cavg: {module.cavg.compute()}")
+    print("--------------------------------------")
+    module.eer.reset()
+    module.cavg.reset()
     
-    module.test_val(
-        "/data/chenc/lid/xfdata/Persian/cv_test.label"
-    )
-    module.test_val(
-        "/data/chenc/lid/xfdata/Swahili/cv_test.label"
-    )
-    module.test_val(
-        "/data/chenc/lid/xfdata/Vietnamese/cv_test.label"
-    )
-    eer_score = EER(num_class=len(module.scores[0]))(
-            module.scores, module.labels
+    if arg.test_range == "all":
+        module.test_val(
+            "/data/chenc/lid/xfdata/Persian/cv_test.label"
         )
-    print(f"eer: {eer_score}")
-    module.clear()
+        module.test_val(
+            "/data/chenc/lid/xfdata/Swahili/cv_test.label"
+        )
+        module.test_val(
+            "/data/chenc/lid/xfdata/Vietnamese/cv_test.label"
+        )
+        print("--------------------------------------")
+        print(f"eer2: {module.eer.compute()}")
+        print(f"cavg: {module.cavg.compute()}")
+        print("--------------------------------------")
+        module.cavg.reset()
     # 生成结果
     # module.process()
