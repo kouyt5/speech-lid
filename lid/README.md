@@ -69,9 +69,9 @@ python main.py --config-name xf_asr_wavlm
 
 配置文件在`config` 目录下，需要根据数据集实际位置和预训练模型路径进行设置，其中模型相关地址如下：
 
-wavlm base: https://huggingface.co/s3prl/converted_ckpts/resolve/main/wavlm_base_plus.pt
-wavlm large: https://huggingface.co/s3prl/converted_ckpts/resolve/main/wavlm_base_plus.pt
-xlsr 300m: https://dl.fbaipublicfiles.com/fairseq/wav2vec/xlsr2_300m.pt
++ wavlm base: https://huggingface.co/s3prl/converted_ckpts/resolve/main/wavlm_base_plus.pt
++ wavlm large: https://huggingface.co/s3prl/converted_ckpts/resolve/main/wavlm_base_plus.pt
++ xlsr 300m: https://dl.fbaipublicfiles.com/fairseq/wav2vec/xlsr2_300m.pt
 
 具体可参考仓库: https://github.com/s3prl/s3prl
 
