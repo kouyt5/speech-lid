@@ -1,4 +1,5 @@
 data/
 *.pt
 *.out
-results/*
+results/*.log
+results/*.wav
