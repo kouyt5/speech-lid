@@ -172,6 +172,36 @@
             },
         },
         {
+            "name": "xf_asr_supervised",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--config-name","xf_asr_supervised",
+                "trainer.train_data_factor=0.01",
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+        },
+        {
+            "name": "test_cross",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--pt_path","/hdd/1/chenc/lid/speech-lid/lid/outputs/2022-10-10/00-52-limit_Wav2vec_Large_lr_0.0001_dr_0.1_bs_4_conform_True/ckpt/last.pt",
+                "--base_pt_path","/hdd/1/chenc/lid/speech-lid/lid/wavlm/ckpts/xlsr2_300m.pt",
+            ],
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+        },
+        {
             "name": "Python: 当前文件",
             "type": "python",
             "request": "launch",
