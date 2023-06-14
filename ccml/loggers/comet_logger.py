@@ -13,6 +13,7 @@ class CometLogger(BaseLogger):
         project: str = None,  # 项目名，例如asr
         entity: str = None,  # 用户名 kouyt5
         name: str = None,  # 实验的名字
+        code_path: str = None,
     ):
         self.experiment = Experiment(
             api_key=api_key,
@@ -21,6 +22,8 @@ class CometLogger(BaseLogger):
         )
         self.experiment.set_name(name)
         self.step = 1
+        if code_path is not None:
+            self.experiment.log_code(folder=code_path)
 
     def get_checkpoint_by_name(self, name: str, path: str = None):
         return None

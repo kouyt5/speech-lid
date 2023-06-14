@@ -1,0 +1,71 @@
+defaults:
+  - base: custom  # 基本的日志配置
+
+model:
+  model_name: "MLP"
+  input_size: ${data.win_len}
+  output_size: 1
+  dropout: 0.2
+  num_layers: 4
+  hidden_size: 1024
+  
+module:
+  optimizer_name: sgd
+  optimizer_param:
+    # momentum: 0.9
+    weight_decay: 0.0001  # 太大了？
+    # nesterov: false
+    lr: 0.1
+  scheduler: tristage  # tristage, reduce
+  loss_fn_name: l1
+  scheduler_param:
+    mode: min
+    factor: 0.1
+    patience: 5
+    cooldown: 3
+    min_lr: 0.00001
+
+data:
+  data_path: /hdd/1/chenc/lid/speech-lid/spec_pred/data/data.json
+  split: [0.8, 0.1, 0.1]
+  spec_range: [73456, 73968]
+  win_len: 40
+  dataloader_params:
+    pin_memory: true
+    num_workers: 6
+    train_batch_size: 4
+    val_batch_size: 4
+    prefetch_factor: 1
+    train_batch_sampler: null
+    val_batch_sampler: null
+    test_batch_sampler: null
+
+trainer:
+  total_epoch: 100
+  gpu_id: 0
+  local_rank: 0
+  world_size: 1
+  ddp: false
+  backend: 'nccl'
+  init_method: env://  # 目前只支持env初始化
+  accumulate_grad: 1
+  master_addr: localhost
+  master_port: 11488
+  use_amp: true
+  use_swa: false
+  eval_interval: 1
+  train_data_factor: 1.0
+  log_interval: 1
+  checkpoint_path: null  # trainer 的checkpoint
+  resume_train_states: true
+
+logger:
+  exp_name: &exp_name >- 
+      ${model.model_name}_spec_pred_lr_${module.optimizer_param.lr}_${module.optimizer_name}_bs_${data.dataloader_params.train_batch_size}
+  comet:
+    api_key: dUu2j8mesSyoVrjuV5ZnkFVNV
+    project: spec_pred
+    entity: kouyt5
+    name: *exp_name
+
+# python main_cross.py --config-name xf_asr_lid trainer.total_epoch=100 model.last_model_name=xvector module.optimizer_name=sgd +module.optimizer_param.momentum=0.9 data.feature.pitch_shift=true data.dataloader_params.train_batch_size=32 module.optimizer_param.lr=0.01

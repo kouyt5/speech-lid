@@ -15,6 +15,7 @@ def cacheable(
     time_unit: TimeUnit = TimeUnit.HOUR,
     project: str = "default",
     cache_path: str = None,
+    cache_extra_param: str = None,
 ):
     """缓存
     基于pickle序列化, 缓存数据, 建议数据为python基本类型 tuple, dict, str等.
@@ -59,10 +60,13 @@ def cacheable(
         def wrapper(*args, **kwargs):
             if cache_key in kwargs.keys():
                 cache_name = kwargs[cache_key]
+            if cache_extra_param in kwargs.keys():
+                cache_name += str(kwargs[cache_extra_param])
             cache_name = __check_cache_name(cache_name)
             # 缓存失效判断, 以文件是否存在为标准
             # 1. 时间
             file_path = os.path.join(cache_path, cache_name)
+            logging.info(f"缓存路径: {file_path}")
             last_modified_time = _get_file_mtime(file_path)
             validity_time = last_modified_time + time_unit.value * duration
             if validity_time < time.time() and os.path.exists(file_path):  # 不在有效期间删除
@@ -125,6 +129,8 @@ def _get_cache_path(cache_path: str = None) -> None:
 
 
 def __check_cache_name(cache_name: str):
+    if cache_name is None:
+        cache_name = ""
     # 替换非法字符
     for c in ["/", "@", " ", "."]:
         cache_name = cache_name.replace(c, "_")

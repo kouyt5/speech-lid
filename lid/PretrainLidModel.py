@@ -9,7 +9,7 @@ from torch.nn.utils.rnn import pad_sequence
 from lid.s3prl_updream.wav2vec.wav2vec2_expert import UpstreamExpert
 from lid.s3prl_updream.interfaces import Featurizer
 from lid.wavlm.example import WavLMModel
-from lid.model.resnet import ResNet18
+from lid.model.resnet import ResNet18, ResNet34, ResNet101
 from lid.model.xvector import XVEC
 
 # dataprocess + pretrain + lastmodel
@@ -125,6 +125,10 @@ class LidModel(torch.nn.Module):
             self.lang_discriminator = LidResnetWeSpeaker(linear_dim, num_class)
         elif last_model_name == "xvector2":
             self.lang_discriminator = LidXvectorWeSpeaker(linear_dim, num_class)
+        elif last_model_name == "resnet34":
+            self.lang_discriminator = LidResnet34WeSpeaker(linear_dim, num_class)
+        elif last_model_name == "resnet101":
+            self.lang_discriminator = LidResnet101WeSpeaker(linear_dim, num_class)
 
     def forward(self, x, sr=16000):
         # (Batch, T, n_mels)
@@ -418,6 +422,28 @@ class LidResnetWeSpeaker(nn.Module):
         x = self.last_linear(x[-1])  # (B, num_classes)
         return x
     
+class LidResnet34WeSpeaker(nn.Module):
+    def __init__(self, input_dim=768, num_classes=3) -> None:
+        super(LidResnet34WeSpeaker, self).__init__()
+        self.resnet = ResNet34(feat_dim=80, embed_dim=256, pooling_func='MQMHASTP')
+        self.last_linear = nn.Linear(256, num_classes)
+        
+    def forward(self, x):
+        x = x.squeeze(1).transpose(1, 2)  # -> (B, L, F)
+        x = self.resnet(x)  # (B, F')
+        x = self.last_linear(x[-1])  # (B, num_classes)
+        return x
+class LidResnet101WeSpeaker(nn.Module):
+    def __init__(self, input_dim=768, num_classes=3) -> None:
+        super(LidResnet101WeSpeaker, self).__init__()
+        self.resnet = ResNet101(feat_dim=80, embed_dim=256, pooling_func='MQMHASTP')
+        self.last_linear = nn.Linear(256, num_classes)
+        
+    def forward(self, x):
+        x = x.squeeze(1).transpose(1, 2)  # -> (B, L, F)
+        x = self.resnet(x)  # (B, F')
+        x = self.last_linear(x[-1])  # (B, num_classes)
+        return x
 class LidXvectorWeSpeaker(nn.Module):
     def __init__(self, input_dim=768, num_classes=3) -> None:
         super(LidXvectorWeSpeaker, self).__init__()
